@@ -1,0 +1,84 @@
+/**
+ * Smoke tests for the CLI — verifies init scaffolds expected files
+ * and run/resume commands spawn without crashing.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execSync, spawnSync } from 'child_process';
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLI = join(__dirname, '..', 'bin', 'cli.mjs');
+
+function makeTmpDir() {
+  const dir = join(tmpdir(), `oah-cli-test-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+test('--help exits 0 and shows commands', () => {
+  const result = spawnSync('node', [CLI, '--help'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, `Expected exit 0, got ${result.status}\n${result.stderr}`);
+  assert.ok(result.stdout.includes('init'), 'should list init command');
+  assert.ok(result.stdout.includes('run'), 'should list run command');
+  assert.ok(result.stdout.includes('resume'), 'should list resume command');
+});
+
+test('init scaffolds .harness/ directory with prompts and agents', () => {
+  const dir = makeTmpDir();
+  // Init needs a git repo for sync-memory (ignore errors from git)
+  try { execSync('git init', { cwd: dir, stdio: 'ignore' }); } catch { /* ok */ }
+
+  try {
+    const result = spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(result.status, 0, `init failed:\n${result.stderr}`);
+
+    assert.ok(existsSync(join(dir, '.harness')), '.harness/ should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'prompts')), '.harness/prompts/ should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'agents')), '.harness/agents/ should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'orchestrate.md')), 'orchestrate.md should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'implement.md')), 'implement.md should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'test.md')), 'test.md should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'agents', 'backend-subagent.agent.md')), 'backend agent should exist');
+    assert.ok(existsSync(join(dir, '.harness', 'agents', 'tester-subagent.agent.md')), 'tester agent should exist');
+    assert.ok(existsSync(join(dir, 'harness.config.json')), 'harness.config.json should be created');
+    assert.ok(existsSync(join(dir, 'CLAUDE.md')), 'CLAUDE.md should be created');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('init skips harness.config.json if it already exists', () => {
+  const dir = makeTmpDir();
+  try { execSync('git init', { cwd: dir, stdio: 'ignore' }); } catch { /* ok */ }
+
+  const configPath = join(dir, 'harness.config.json');
+  const original = JSON.stringify({ harnessDir: '.harness', agents: { 'my-agent': { scope: ['src/'] } } });
+  writeFileSync(configPath, original);
+
+  try {
+    spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
+    const after = readFileSync(configPath, 'utf8');
+    assert.equal(after, original, 'existing harness.config.json should not be overwritten');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('run with no task and no queue exits non-zero', () => {
+  const dir = makeTmpDir();
+  // Init so config exists
+  try { execSync('git init', { cwd: dir, stdio: 'ignore' }); } catch { /* ok */ }
+  spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
+
+  try {
+    const result = spawnSync('node', [CLI, 'run'], { cwd: dir, encoding: 'utf8', timeout: 10_000 });
+    assert.notEqual(result.status, 0, 'run with no task should fail');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

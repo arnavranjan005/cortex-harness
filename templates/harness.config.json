@@ -1,0 +1,28 @@
+﻿{
+  "harnessDir": ".harness",
+  "promptsDir": ".harness/prompts",
+  "agentsDir": ".harness/agents",
+  "agents": {
+    "backend-subagent": {
+      "scope": ["api/", "libs/shared/schema", "libs/shared/types", "serverless/"]
+    },
+    "frontend-subagent": {
+      "scope": ["web/", "libs/shared/ui"]
+    },
+    "distributed-subagent": {
+      "scope": ["worker/"]
+    },
+    "infra-subagent": {
+      "scope": [".github/", "nx.json", "package.json", "tsconfig"]
+    },
+    "tester-subagent": {
+      "scope": null
+    },
+    "explorer-subagent": {
+      "scope": []
+    },
+    "planner-subagent": {
+      "scope": []
+    }
+  }
+}

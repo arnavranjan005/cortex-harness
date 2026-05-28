@@ -1,0 +1,12 @@
+node_modules/
+
+# Harness runtime state (generated at run-time, not for source control)
+.harness/runs/
+.harness/cycle-state/
+.harness/output/
+.harness/session.json
+.harness/task-queue.json
+.harness/sessions/
+
+# Temp prompt/script files written by the engine during cycles
+*.ps1

@@ -1,0 +1,160 @@
+# Workspace Operating Notes (Nx Agentic OS)
+
+- If `nx-workspace` and `nx-generate` skills are available in your system prompt, invoke them for discovery and scaffolding (they are workspace-specific — record "not available" and continue if absent).
+- Always prefix nx commands: `npm exec nx`.
+- Validation in `libs/shared/schema`, types in `libs/shared/types`, UI in `libs/shared/ui`.
+- Keep route files thin — business logic in controllers, services, or queue modules.
+- PDF generation → `serverless`, background processing → `worker`.
+- Check existing modules before creating new services, helpers, or shared abstractions.
+- Never edit Prisma/DB schema without human confirmation.
+
+## Agent Orchestration
+
+This workspace uses an orchestrator → sub-agent model for all feature work.
+
+**Before routing — check for vague requests:**
+If the request has no specific surface, file, behavior, or error mentioned AND is fewer than ~15 words:
+- Ask 2–3 targeted clarifying questions before loading any prompt.
+- Exception: clearly greenfield ("create an app", "build a new service") → read `create-app.md` immediately.
+
+**Match user intent to the right prompt:**
+
+| User signals | Action |
+|---|---|
+| "create an app", "build from scratch", greenfield | Read `.harness/prompts/create-app.md` and follow its steps |
+| "add", "implement", "I need X" on existing code | Read `.harness/prompts/implement-feature.md` and follow its steps |
+| "fix", "broken", "error", "not working", stack trace | Read `.harness/prompts/fix-bug.md` and follow its steps |
+| "change", "update", "modify", "adjust" existing behavior | Read `.harness/prompts/edit-feature.md` and follow its steps |
+| "where is X", "find X", "how does X work" (read-only) | Spawn `explorer-subagent` |
+| "plan", "design", "how should we approach" (read-only) | Spawn `planner-subagent` |
+| "scaffold", "generate", new lib/project inside existing app | Invoke `nx-generate` skill first, then `implement-feature.md` |
+
+**Cycle mode — autonomous harness sessions:**
+
+If your initial prompt begins with `CYCLE CONSTRAINTS`, you are running as a named cycle inside the autonomous harness. Apply these rules immediately:
+
+- **Skip the session.json check** — the outer loop owns queue state
+- **Skip vague-request handling** — your task is fully specified in the cycle prompt
+- Follow the cycle prompt instructions exactly, write your output JSON to the specified `.harness/cycle-state/` file
+- End your final message with exactly one signal:
+  - `CYCLE_COMPLETE` — work is finished, outer loop advances the queue
+  - `NEEDS_HUMAN_INPUT` — blocked on a decision only a human can make
+  - `CYCLE_PARTIAL:<reason>` — could not finish; outer loop will retry
+
+**Session resumption — run this at the start of every interactive conversation:**
+
+```
+node -e "
+  try {
+    const s = JSON.parse(require('fs').readFileSync('.harness/session.json','utf8'));
+    const cycles = s.cycles || [];
+    if (!cycles.length) { console.log('FRESH'); process.exit(0); }
+    const partial  = cycles.filter(c => c.outcome === 'partial').map(c => '['+c.n+'] '+c.description);
+    const blocked  = cycles.filter(c => c.outcome === 'blocked').map(c => '['+c.n+'] '+c.description);
+    const done     = cycles.filter(c => c.outcome === 'done').length;
+    console.log('RESUME');
+    console.log('started='+s.startTime);
+    console.log('done='+done);
+    if (partial.length)  console.log('partial='+partial.join('|'));
+    if (blocked.length)  console.log('blocked='+blocked.join('|'));
+  } catch { console.log('FRESH'); }
+"
+```
+
+- **FRESH** → greet normally, wait for user's first message
+- **RESUME** → surface unfinished tasks: "Previous session from [startTime] — [done] done, [partial] partial, [blocked] blocked." Ask: "Resume these, or start fresh?"
+
+**Mandatory pre-delegation steps — required before spawning any feature sub-agent:**
+1. **Invoke `nx-workspace` skill** (if available) — hard mandate before explorer. Record "not available" if absent.
+2. **Spawn `explorer-subagent` first** — map existing file structure, component/module placement, naming conventions. Do not brief feature agents without this report. This applies even when the location seems obvious.
+3. **Spawn `planner-subagent` next** if task touches >1 surface, component/architecture placement is unclear, or shared contracts are involved.
+4. Only after explorer (and planner if needed) report back, brief and spawn feature sub-agents.
+
+**The one rule every agent must follow:**
+The agent that receives the user's request is the orchestrator. It plans, delegates, and reconciles. It does NOT write production code. Every source file edit must be owned by a sub-agent spawned from `.harness/agents/`.
+
+**Sub-agent routing table:**
+| What the work touches | Sub-agent to spawn |
+|---|---|
+| BullMQ queues, async flows, retry, idempotency; `worker/` event handlers, job processors, queue consumer logic | `distributed-subagent` |
+| `api/`, `serverless/`, shared contracts (`libs/shared/schema`, `libs/shared/types`) | `backend-subagent` |
+| `web/`, `libs/shared/ui` | `frontend-subagent` |
+| Nx config, CI, `.github/workflows`, dependencies | `infra-subagent` |
+| Builds, tests, verification | `tester-subagent` |
+| Codebase discovery (read-only) | `explorer-subagent` |
+| Multi-surface or contract-heavy planning (read-only) | `planner-subagent` |
+
+**Every sub-agent prompt must include:**
+1. The agent's role block (paste from `.harness/agents/<name>.agent.md`)
+2. Feature context
+3. Explicit write ownership — exact files or directories
+4. Out-of-scope list — what NOT to touch
+5. Verification command — `npm exec nx run <project>:build` or equivalent
+6. Return format
+7. Skill guidance — paste output of any skills invoked (or write "none available / none matched")
+
+**Spawn independent agents in parallel** when their write scopes do not overlap.
+
+## Skills and MCP Tools
+
+At the start of every task, scan the available skills list in the system prompt. If any skill's trigger description matches the work, invoke it via the Skill tool before routing or briefing anyone. Narrating intent is not invoking — you must actually call the Skill tool.
+
+`nx-workspace` and `nx-generate` are workspace-specific skills — they may not be present in every deployment. If absent, record "not available" and continue.
+
+If no skills match: record "none available / none matched" and continue.
+
+## Reconciliation Protocol (after all agents report back)
+
+1. **Cross-surface contract check** — if any agent changed a shared type, interface, or Zod schema in `libs/shared/*`, verify every other consumer used the updated version. On failure: re-delegate to owning agent, re-run check, repeat.
+
+2. **Resolve out-of-scope gaps** — collect every gap from agent reports. Fill the mandatory re-delegation log:
+
+   | Gap | Owning agent | Spawned? | Result |
+   |-----|-------------|----------|--------|
+   | (every gap) | | yes / no | pass / human-approval / failed |
+
+   - Spawned = no anywhere → NOT done, spawn that agent now.
+   - "Pre-existing" or "out of scope for this task" are NOT valid reasons to leave Spawned = no.
+   - Gap reaches Residual risks ONLY if: Spawned = yes AND result = human-approval OR failed after 2 attempts.
+
+   Hard blocks — human approval required, do not re-delegate:
+   - Prisma/DB schema change needed
+   - Auth, JWT, session, CORS, CSRF, permissions change
+   - Ambiguous ownership spanning >2 agents after checking routing table
+
+3. **Consistency check** — confirm queue producers/consumers, API request/response shapes, and validation schemas align across all changed surfaces.
+
+4. **Final verification** — spawn `tester-subagent` to run `npm exec nx affected --target=build,test,lint`. Add `typecheck` if `libs/shared/` contracts were changed. **Mandatory — not skippable.**
+   - If any changed functionality has no test coverage, write the missing tests — not a follow-up.
+   - On failure (attempt 1–2): re-delegate to owning agent with exact error, re-run.
+   - On failure (attempt 3+): read `.harness/prompts/prompt-orchestration.md` and follow its chaining rules.
+
+**Pre-delivery gate — check every item before delivering:**
+
+- [ ] Session.json checked at conversation start (FRESH/RESUME handled)
+- [ ] Prompt file was read with the Read tool — not from memory
+- [ ] `nx-workspace` invoked (or recorded as not available) before explorer
+- [ ] Explorer ran before any sub-agent was briefed
+- [ ] Planner ran (if >1 surface or shared contracts)
+- [ ] Named sub-agent used per routing table (not generic Agent())
+- [ ] Every sub-agent prompt had all 7 required elements
+- [ ] Contract check complete (Step 1)
+- [ ] Re-delegation log filled — every gap Spawned = yes or human-approval (Step 2)
+- [ ] Consistency check passed (Step 3)
+- [ ] Tester ran `npm exec nx affected --target=build,test,lint` — all pass (Step 4)
+- [ ] Missing tests written — none deferred (Step 4)
+
+**Deliver a unified summary only after the gate is fully resolved:**
+- **What changed**: files edited per surface, one line each
+- **Checks passed**: Nx targets run and their result
+- **Gaps resolved**: out-of-scope items that were re-delegated and closed
+- **Residual risks**: anything still open, unverified, or requiring human decision
+
+## Security Rules
+
+- Never access actual `.env` contents or print environment variables.
+- Never expose credentials, tokens, API keys, or personal data in logs, diffs, or summaries.
+- Never commit secrets or secret-bearing config values.
+- Treat auth, session, JWT, cookie, CORS, CSRF, webhook verification, and permission changes as security-sensitive — request approval before modifying.
+- Never edit Prisma/DB schema without human confirmation.
+- Do not add client-side code that embeds secrets or environment-derived sensitive values.

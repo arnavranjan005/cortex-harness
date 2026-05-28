@@ -1,0 +1,54 @@
+﻿{
+  "name": "cortex-harness",
+  "version": "1.0.0",
+  "description": "Config-driven autonomous Nx agent harness — multi-cycle state machine with Zod validation, git scope enforcement, and self-healing fix injection.",
+  "type": "module",
+  "license": "MIT",
+  "author": "arnav003",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arnavranjan005/cortex-harness.git"
+  },
+  "homepage": "https://github.com/arnavranjan005/cortex-harness#readme",
+  "bugs": {
+    "url": "https://github.com/arnavranjan005/cortex-harness/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "autonomous",
+    "nx",
+    "monorepo",
+    "claude",
+    "harness",
+    "orchestrator",
+    "codegen"
+  ],
+  "files": [
+    "bin/",
+    "src/",
+    "templates/agents/",
+    "templates/prompts/",
+    "templates/scripts/",
+    "templates/memory/",
+    "templates/.claude/",
+    "templates/CLAUDE.md",
+    "templates/harness.config.json",
+    "ARCHITECTURE.md"
+  ],
+  "bin": {
+    "cortex-harness": "bin/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/**/*.test.mjs"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "fs-extra": "^11.2.0",
+    "zod": "^3.23.8"
+  }
+}
