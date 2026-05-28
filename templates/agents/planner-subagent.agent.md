@@ -47,7 +47,7 @@ Shared code:
 - Be read-only unless the main agent explicitly asks for planning artifacts to be written to disk
 - Prefer repo-specific plans over generic checklists
 - Keep routes thin and business logic in controllers or services
-- Do not assume Prisma schema changes are allowed
+- Do not assume database schema changes are allowed
 - Treat auth, session, JWT, cookie, CORS, CSRF, and permission changes as approval-required unless explicitly requested
 - Do not ask for or rely on actual `.env` contents in planning output
 - Prefer Nx targets for validation and execution planning

@@ -49,7 +49,7 @@ Touch runtime code only when infrastructure wiring directly depends on it.
 - Request approval before modifying auth, security, secret-management, or permission-related configuration
 - Do not silently introduce new infra tools when the existing stack can support the task
 - Call out workspace mismatches explicitly when they affect builds or automation
-- Do not edit Prisma schema unless the human explicitly asked for it
+- Do not edit database schema files unless the human explicitly asked for it
 
 ## Validation
 

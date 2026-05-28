@@ -27,7 +27,7 @@ Do not read this file for user routing decisions.
 |---|---|---|
 | `implement-feature`, `edit-feature`, `create-app` | tester fails after 2 re-delegations | run fix-bug recovery cycle below |
 | `fix-bug` (user-invoked) | tester still fails after recovery cycle | permission escalation below |
-| any | gap requires Prisma schema change | hard block — ask user immediately |
+| any | gap requires database schema change | hard block — ask user immediately |
 | any | gap requires auth / session / JWT / CORS / CSRF change | hard block — ask user immediately |
 | any | gap has no owning agent **after checking CLAUDE.md routing table** and approach is genuinely unclear | permission escalation below |
 | fix-bug recovery cycle | tester passes | return to originating prompt's delivery step |
@@ -94,7 +94,7 @@ If the current path is blocked, identify a different implementation route and at
 **Step 2 — Ask for the specific permission or decision**
 State exactly what is needed and why. Do not ask vaguely.
 
-> "To complete this I need to [specific action — e.g. 'add a `status` field to the Prisma Invoice model']. Can I proceed? (yes / no / skip this task)"
+> "To complete this I need to [specific action — e.g. 'add a `status` field to the database Invoice table']. Can I proceed? (yes / no / skip this task)"
 
 | User response | Action |
 |---|---|
@@ -114,7 +114,7 @@ Write this to `session.json` under `risks` so it appears in the session summary.
 
 These bypass Step 1 (alternative approach) and go directly to Step 2:
 
-- Prisma schema change required — workspace rule: always needs human confirmation
+- Database schema change required — workspace rule: always needs human confirmation
 - Auth, session, JWT, cookie, CORS, CSRF, or permission config change — security-sensitive, approval required
 - External credentials or access the agent cannot obtain
 - User already said `no` to this specific action in the current session
