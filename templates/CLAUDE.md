@@ -1,12 +1,11 @@
-# Workspace Operating Notes (Nx Agentic OS)
+# Workspace Operating Notes
 
 - If `nx-workspace` and `nx-generate` skills are available in your system prompt, invoke them for discovery and scaffolding (they are workspace-specific — record "not available" and continue if absent).
 - Always prefix nx commands: `npm exec nx`.
-- Validation in `libs/shared/schema`, types in `libs/shared/types`, UI in `libs/shared/ui`.
+- Keep shared contracts (schemas, types, UI primitives) in your configured shared libs — paths are defined in `harness.config.json`.
 - Keep route files thin — business logic in controllers, services, or queue modules.
-- PDF generation → `serverless`, background processing → `worker`.
 - Check existing modules before creating new services, helpers, or shared abstractions.
-- Never edit Prisma/DB schema without human confirmation.
+- Never edit database schema without human confirmation.
 
 ## Agent Orchestration
 
@@ -76,9 +75,9 @@ The agent that receives the user's request is the orchestrator. It plans, delega
 **Sub-agent routing table:**
 | What the work touches | Sub-agent to spawn |
 |---|---|
-| BullMQ queues, async flows, retry, idempotency; `worker/` event handlers, job processors, queue consumer logic | `distributed-subagent` |
-| `api/`, `serverless/`, shared contracts (`libs/shared/schema`, `libs/shared/types`) | `backend-subagent` |
-| `web/`, `libs/shared/ui` | `frontend-subagent` |
+| Queue/job flows, async processing, retry, idempotency, event-driven handlers | `distributed-subagent` |
+| Backend apps, serverless functions, shared contracts (schema, types) | `backend-subagent` |
+| Frontend apps, shared UI libs | `frontend-subagent` |
 | Nx config, CI, `.github/workflows`, dependencies | `infra-subagent` |
 | Builds, tests, verification | `tester-subagent` |
 | Codebase discovery (read-only) | `explorer-subagent` |
@@ -105,7 +104,7 @@ If no skills match: record "none available / none matched" and continue.
 
 ## Reconciliation Protocol (after all agents report back)
 
-1. **Cross-surface contract check** — if any agent changed a shared type, interface, or Zod schema in `libs/shared/*`, verify every other consumer used the updated version. On failure: re-delegate to owning agent, re-run check, repeat.
+1. **Cross-surface contract check** — if any agent changed a shared type, interface, or Zod schema in a shared lib, verify every other consumer used the updated version. On failure: re-delegate to owning agent, re-run check, repeat.
 
 2. **Resolve out-of-scope gaps** — collect every gap from agent reports. Fill the mandatory re-delegation log:
 
@@ -118,13 +117,13 @@ If no skills match: record "none available / none matched" and continue.
    - Gap reaches Residual risks ONLY if: Spawned = yes AND result = human-approval OR failed after 2 attempts.
 
    Hard blocks — human approval required, do not re-delegate:
-   - Prisma/DB schema change needed
+   - Database schema change needed
    - Auth, JWT, session, CORS, CSRF, permissions change
    - Ambiguous ownership spanning >2 agents after checking routing table
 
 3. **Consistency check** — confirm queue producers/consumers, API request/response shapes, and validation schemas align across all changed surfaces.
 
-4. **Final verification** — spawn `tester-subagent` to run `npm exec nx affected --target=build,test,lint`. Add `typecheck` if `libs/shared/` contracts were changed. **Mandatory — not skippable.**
+4. **Final verification** — spawn `tester-subagent` to run `npm exec nx affected --target=build,test,lint`. Add `typecheck` if shared lib contracts were changed. **Mandatory — not skippable.**
    - If any changed functionality has no test coverage, write the missing tests — not a follow-up.
    - On failure (attempt 1–2): re-delegate to owning agent with exact error, re-run.
    - On failure (attempt 3+): read `.harness/prompts/prompt-orchestration.md` and follow its chaining rules.
@@ -156,5 +155,5 @@ If no skills match: record "none available / none matched" and continue.
 - Never expose credentials, tokens, API keys, or personal data in logs, diffs, or summaries.
 - Never commit secrets or secret-bearing config values.
 - Treat auth, session, JWT, cookie, CORS, CSRF, webhook verification, and permission changes as security-sensitive — request approval before modifying.
-- Never edit Prisma/DB schema without human confirmation.
+- Never edit database schema without human confirmation.
 - Do not add client-side code that embeds secrets or environment-derived sensitive values.

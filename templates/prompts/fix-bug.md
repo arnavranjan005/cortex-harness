@@ -13,7 +13,7 @@ Your job is to reproduce the failure, identify the root cause, delegate a minima
 
 ## ⛔ HARD RULE
 
-**NEVER write production code directly on the main agent.** The main agent diagnoses — sub-agents fix. Every source file edit in `api/`, `worker/`, `serverless/`, `web/`, or `libs/` must be owned by a sub-agent.
+**NEVER write production code directly on the main agent.** The main agent diagnoses — sub-agents fix. Every source file edit in your project's applications and libraries must be owned by a sub-agent.
 
 The only files the main agent may edit directly: `.harness/`, `CLAUDE.md`.
 
@@ -49,7 +49,7 @@ Output summary: [one line per skill, or "n/a"]
 
 Before delegating any fix, run these checks in order — stop at the first one that surfaces the error:
 
-**1a. Typecheck first** — run `npm exec nx run <affected-surface>:typecheck`. Prisma query errors, wrong API shapes, and TS mismatches appear immediately without a running server. If typecheck fails, that IS the root cause — skip to Step 2.
+**1a. Typecheck first** — run `npm exec nx run <affected-surface>:typecheck`. Query errors, wrong API shapes, and type mismatches appear immediately without a running server. If typecheck fails, that IS the root cause — skip to Step 2.
 
 **1b. Run existing tests** — run `npm exec nx affected --target=test,e2e`. A failing test pinpoints the broken path faster than static analysis.
 
@@ -66,7 +66,7 @@ If reproduction is blocked — say so explicitly and stop. Do not guess at a fix
 Once the failure is located, determine the root cause before writing anything.
 
 Ask yourself (or spawn `Explorer` if the codepath is unclear):
-- Is this a logic error, type mismatch, missing Zod validation, race condition, or contract mismatch?
+- Is this a logic error, type mismatch, missing validation, race condition, or contract mismatch?
 - Is the bug isolated or does it reflect a broader misalignment (e.g. producer/consumer shape mismatch)?
 - Is there a test that should have caught this but didn't?
 
@@ -80,7 +80,7 @@ Before delegating:
 - identify the exact files that need to change
 - confirm the owning sub-agent for each (routing table in `CLAUDE.md`)
 - list what must NOT change
-- if a shared contract (`libs/shared/schema` or `libs/shared/types`) is involved, all consumers must be updated in the same pass — identify them now
+- if a shared contract (schema lib or types lib) is involved, all consumers must be updated in the same pass — identify them now
 
 If the fix touches more than two surfaces, assign a single contract owner before delegating consumers.
 

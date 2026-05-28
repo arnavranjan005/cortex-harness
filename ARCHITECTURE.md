@@ -1,6 +1,6 @@
 # Cortex — Engine Architecture
 
-This document covers the internal mechanics of `src/run-autonomous.mjs` for contributors and anyone who wants to understand how the harness actually works.
+This document covers the internal mechanics of `src/run-autonomous.mjs` and `bin/cli.mjs` for contributors and anyone who wants to understand how the harness works.
 
 ---
 
@@ -16,7 +16,7 @@ The `orchestrate` cycle writes `task-queue.json` — a manifest that defines eve
 
 ```json
 {
-  "task": "add payments page",
+  "task": "add product listing page",
   "promptType": "implement-feature",
   "cycles": [
     { "id": "explore",            "type": "explore",   "status": "pending", "parallel": false },
@@ -95,6 +95,76 @@ Each implement cycle is bound to a declared file-path scope from `harness.config
 ```
 
 If the cascade cannot fully revert a file, a `scope-cleanup-<cycleId>` reconcile cycle is injected into the queue before the run continues.
+
+**`scope: []` — unconstrained mode:** When an agent's scope is an empty array, the scope check is skipped entirely and the agent may write anywhere. This is the default for a fresh project with no paths configured yet.
+
+---
+
+## Auto-Scope Update
+
+When an implement cycle completes with `scope: []` (unconstrained), the harness automatically detects the paths created and writes them back to `harness.config.json`, locking them in for all future cycles in the same run.
+
+**Path inference** (`inferScopePath`):
+
+| File path | Inferred scope |
+|---|---|
+| `apps/api/src/products/controller.ts` | `apps/api/` |
+| `libs/shared/models/src/product.ts` | `libs/shared/models/` |
+| `libs/shop/feature-cart/src/index.ts` | `libs/shop/feature-cart/` |
+
+**Shared lib distribution** (`resolveTargetAgents`): paths added to scope are distributed to all agents that need them, not just the creator:
+
+| Path type | Agents receiving the scope |
+|---|---|
+| `apps/<name>/` or `libs/<feature>/` | creating agent only |
+| `libs/shared/` (non-UI) | backend + frontend + distributed |
+| `libs/.../ui` or `libs/.../components` | frontend only |
+
+The in-memory `CONFIGURED_AGENTS` map is also updated immediately, so subsequent cycles in the same run benefit from enforcement right away.
+
+---
+
+## Surface Detection (init)
+
+`bin/cli.mjs` recursively walks the project tree on `init`, skipping standard ignore directories (`node_modules`, `.git`, `dist`, `build`, `.nx`, etc.). A directory is treated as a **project root** when it contains `src/`, `project.json`, `index.ts`, or `index.js`.
+
+Each project root's full relative path is matched against ordered word-boundary regexes:
+
+```
+backend      →  \b(api|backend|server|serverless)\b
+distributed  →  \b(worker|queue|job|processor|consumer|producer)\b
+sharedSchema →  \b(schema|zod|validation|models?)\b
+sharedTypes  →  \b(types?|entit(y|ies)|interfaces?|domain)\b
+sharedUi     →  \bui\b|\b(components?|design[-_]system)\b
+frontend     →  \b(web|frontend|client|shop|store|dashboard|portal)\b
+```
+
+First match wins. Paths that match nothing are left unassigned and shown to the user for manual input. `e2e` projects are always skipped.
+
+Works for both **explicit-config** workspaces (with `project.json`) and **inferred-target** workspaces (plugins only, no `project.json`).
+
+---
+
+## Agent MD Sentinel Patching
+
+Agent `.agent.md` files use HTML comment sentinels to mark scope sections:
+
+```md
+## Scope
+
+Primary ownership:
+<!-- cortex:backend -->
+- `apps/api/`
+<!-- /cortex:backend -->
+```
+
+`patchAgentScopes()` in `cli.mjs` replaces the content between each `<!-- cortex:KEY -->` / `<!-- /cortex:KEY -->` pair using `indexOf` (no regex, no escaping issues). Patching runs automatically after:
+
+- `cortex-harness init` — after surface confirmation
+- `cortex-harness config` — after the interactive wizard
+- `cortex-harness config add-scope` / `remove-scope` — after any surgical scope mutation
+
+The `<!-- cortex:frontend-checks -->` sentinel generates Nx run commands from the actual frontend app names (e.g. `nx run shop:lint`) rather than a hardcoded project name.
 
 ---
 

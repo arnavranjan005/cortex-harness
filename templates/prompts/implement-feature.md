@@ -13,7 +13,7 @@ Your job is to scope the work, delegate implementation to the correct sub-agents
 
 ## ⛔ HARD RULE
 
-**NEVER write production code directly on the main agent.** Every source file edit in `api/`, `worker/`, `serverless/`, `web/`, or `libs/` must be owned by a sub-agent. Understanding the code is the orchestrator's job. Writing the code is the sub-agent's job.
+**NEVER write production code directly on the main agent.** Every source file edit in your project's applications and libraries must be owned by a sub-agent. Understanding the code is the orchestrator's job. Writing the code is the sub-agent's job.
 
 The only files the main agent may edit directly: `.harness/`, `CLAUDE.md`.
 
@@ -94,7 +94,7 @@ Do NOT edit: <file/surface list>
 ## Task
 1. <specific action on specific file>
 2. <specific action on specific file>
-3. Verify with: npm exec nx run <your-scope>/<project>:build
+3. Verify with: npm exec nx run <project>:build
 
 ## Return format
 - Files changed

@@ -13,7 +13,7 @@ Your job is to understand the current behavior, define the minimal change needed
 
 ## ⛔ HARD RULE
 
-**NEVER write production code directly on the main agent.** The main agent plans — sub-agents implement. Every source file edit in `api/`, `worker/`, `serverless/`, `web/`, or `libs/` must be owned by a sub-agent.
+**NEVER write production code directly on the main agent.** The main agent plans — sub-agents implement. Every source file edit in your project's applications and libraries must be owned by a sub-agent.
 
 The only files the main agent may edit directly: `.harness/`, `CLAUDE.md`.
 
@@ -59,7 +59,7 @@ Before delegating, answer these explicitly:
 - What is the desired behavior after the edit?
 - What must be preserved and must not regress?
 - Which files change and which stay untouched?
-- Does the change affect a shared contract in `libs/shared/*`? If yes, identify all consumers now — they must all be updated in the same pass.
+- Does the change affect a shared contract in a shared lib? If yes, identify all consumers now — they must all be updated in the same pass.
 
 **Minimal change rule:** change only what is required. Do not refactor, clean up, or improve adjacent code unless the user explicitly asked. Scope creep in edits causes regressions.
 
@@ -87,7 +87,7 @@ Run independent agents in parallel when their scopes are disjoint.
 
 ### Step 5: Verify New and Existing Behavior
 
-Spawn `Tester` with two explicit goals:
+Spawn `tester-subagent` with two explicit goals:
 1. **New behavior** — the edited feature behaves as requested
 2. **Preserved behavior** — adjacent and downstream behavior that was not supposed to change still works
 
@@ -113,8 +113,8 @@ Return a summary with exactly these sections:
 
 | Edit type | Sub-agents to use |
 |---|---|
-| UI copy, style, layout only | `Frontend` only |
-| API response shape or validation change | `Backend` + `Frontend` if UI consumes it |
-| Queue payload or job behavior change | `Distributed` + `Backend` |
+| UI copy, style, layout only | `frontend-subagent` only |
+| API response shape or validation change | `backend-subagent` + `frontend-subagent` if UI consumes it |
+| Queue payload or job behavior change | `distributed-subagent` + `backend-subagent` |
 | Shared type or Zod schema change | one owner, all consumers updated |
-| Multi-surface behavior change | `Planner` first, then implementation agents |
+| Multi-surface behavior change | `planner-subagent` first, then implementation agents |

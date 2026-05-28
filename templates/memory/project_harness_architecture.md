@@ -1,6 +1,6 @@
 ---
 name: project-harness-architecture
-description: Multi-cycle autonomous harness — each cycle is a fresh bounded claude -p session driven by task-queue.json
+description: Multi-cycle autonomous harness — each cycle is a fresh bounded claude -p session driven by task-queue.json; surfaces auto-detected on init; scopes auto-updated after unconstrained runs
 metadata:
   type: project
 ---
@@ -40,6 +40,30 @@ Each cycle writes a JSON file to `.harness/cycle-state/`. The next cycle's promp
 | `implement-*.json` | each implement cycle | reconcile |
 | `reconcile.json` | reconcile | test, deliver |
 | `test.json` | test | outer loop (branches on `passed` field) |
+
+## Scope enforcement and auto-update
+
+Each implement cycle is bound to scope paths in `harness.config.json`. After every cycle exits, changed files are compared against scope — out-of-scope writes are reverted via `git restore → git clean -f → git show HEAD → unlinkSync`.
+
+When an agent runs with `scope: []` (unconstrained), the harness auto-detects created paths and writes them back to `harness.config.json` after the cycle completes. Shared libs (`libs/shared/`) are distributed to all relevant agents; app/feature paths go only to the creator.
+
+## Surface detection on init
+
+`cortex-harness init` recursively walks the project tree and classifies project roots by matching their full relative path against word-boundary regexes. Works for both `project.json`-based and inferred-target Nx workspaces. Unrecognized paths are shown to the user for manual input.
+
+## Agent MD sentinel patching
+
+Agent `.agent.md` files use `<!-- cortex:surface -->` sentinels around scope sections. `cortex-harness init`, `cortex-harness config`, and `config add-scope`/`remove-scope` all patch these sections automatically so agent files always reflect the current `harness.config.json`.
+
+## Config CLI
+
+`cortex-harness config` replaces manual `harness.config.json` editing:
+- `config list` — print scope table
+- `config` — interactive wizard
+- `config add-scope <agent> <path>` — add a scope path
+- `config remove-scope <agent> <path>` — remove a scope path
+
+Every mutation updates both `harness.config.json` and agent `.agent.md` scope sections.
 
 ## Parallel execution
 

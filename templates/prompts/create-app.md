@@ -13,7 +13,7 @@ Your job is to clarify scope, scaffold the project structure, delegate implement
 
 ## ⛔ HARD RULE
 
-**NEVER write production code directly on the main agent.** Every source file edit in `api/`, `worker/`, `serverless/`, `web/`, or `libs/` must be owned by a sub-agent. Scaffolding coordination, assumption documentation, and planning are the orchestrator's job. Writing code is the sub-agent's job.
+**NEVER write production code directly on the main agent.** Every source file edit in your project's applications and libraries must be owned by a sub-agent. Scaffolding coordination, assumption documentation, and planning are the orchestrator's job. Writing code is the sub-agent's job.
 
 The only files the main agent may edit directly: `.harness/`, `CLAUDE.md`.
 
@@ -55,7 +55,7 @@ Greenfield work is always ambiguous. Before spawning anything, extract what is k
 
 **For everything not stated, ask only the questions that are genuinely unanswered — maximum 3, one sentence each:**
 
-1. **Surfaces** — "Does this need a UI (web), an API, background jobs, or a combination?"
+1. **Surfaces** — "Does this need a UI, an API, background jobs, or a combination?"
 2. **Auth** — "Do users need to log in? If yes — email/password, OAuth, magic link, or none?"
 3. **Core features** — "What are the 2–3 things it must do to be considered working?"
 
@@ -69,7 +69,7 @@ Do not ask all 3 if some are already clear. Do not ask about implementation deta
 ## Build Brief
 - App name:       [derived or asked]
 - Purpose:        [what it does, one sentence]
-- Surfaces:       [web | api | worker | serverless — select applicable]
+- Surfaces:       [frontend | backend | worker/queue | serverless — select applicable]
 - Auth:           [yes/no — method]
 - Core features:  1. ...  2. ...  3. ...
 - Out of scope:   [what will NOT be built in this pass]
@@ -89,11 +89,11 @@ Use the `nx-generate` skill to scaffold the required projects based on the surfa
 
 | Surface | Generator |
 |---|---|
-| Web UI | `@nx/react:app` or `@nx/next:app` |
-| API | `@nx/nest:app` or `@nx/express:app` |
-| Worker | extend existing `worker/` or `@nx/node:app` |
-| Serverless | extend existing `serverless/` |
-| Shared lib | `@nx/js:lib` under `libs/shared/` |
+| Frontend UI | `@nx/react:app` or `@nx/next:app` |
+| Backend API | `@nx/nest:app` or `@nx/express:app` |
+| Worker / queue | `@nx/node:app` or extend existing worker project |
+| Serverless functions | `@nx/node:app` configured for serverless deployment |
+| Shared lib | `@nx/js:lib` under your shared libs directory |
 
 Do not scaffold surfaces that were marked out of scope in the Build Brief.
 
@@ -109,7 +109,7 @@ Spawn `planner-subagent` with:
 
 Ask it to return:
 - file and module candidates per surface
-- shared contract locations (`libs/shared/schema`, `libs/shared/types`)
+- shared contract locations (schema lib, types lib)
 - execution order for implementation agents
 - sequencing constraints (e.g. contract owner before consumers)
 - risks and open assumptions
@@ -160,7 +160,7 @@ Do NOT edit: <file/surface list>
 ## Task
 1. <specific action on specific file>
 2. <specific action on specific file>
-3. Verify with: npm exec nx run <your-scope>/<project>:build
+3. Verify with: npm exec nx run <project>:build
 
 ## Return format
 - Files changed
