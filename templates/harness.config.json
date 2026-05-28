@@ -1,16 +1,16 @@
-﻿{
+{
   "harnessDir": ".harness",
   "promptsDir": ".harness/prompts",
   "agentsDir": ".harness/agents",
   "agents": {
     "backend-subagent": {
-      "scope": ["api/", "libs/shared/schema", "libs/shared/types", "serverless/"]
+      "scope": []
     },
     "frontend-subagent": {
-      "scope": ["web/", "libs/shared/ui"]
+      "scope": []
     },
     "distributed-subagent": {
-      "scope": ["worker/"]
+      "scope": []
     },
     "infra-subagent": {
       "scope": [".github/", "nx.json", "package.json", "tsconfig"]

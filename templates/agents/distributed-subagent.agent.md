@@ -22,8 +22,8 @@ Shared ownership when required by the task:
 <!-- /cortex:shared-types -->
 
 ## Responsibilities
-- Implement transactional outbox patterns.
-- Design idempotent job handlers in the worker/queue surface.
+- Design and implement idempotent job handlers in the worker/queue surface.
+- Implement coordination patterns (outbox, saga, retry) where the task requires them.
 - Manage queue-based orchestration and event-driven transitions.
 - Ensure shared types and schemas are used as contracts across surfaces.
 

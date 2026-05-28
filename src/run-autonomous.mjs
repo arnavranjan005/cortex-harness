@@ -1,5 +1,5 @@
 /**
- * Autonomous multi-cycle runner for Open Agent Harness.
+ * Autonomous multi-cycle runner for Cortex Harness.
  * Configuration-driven: reads harness.config.json for paths, agent scopes, and commands.
  */
 
@@ -341,7 +341,7 @@ if (!userTask) {
   } catch { /* no queue yet */ }
 }
 if (!userTask) {
-  console.error('Usage: open-agent-harness run "your task description"');
+  console.error('Usage: cortex-harness run "your task description"');
   process.exit(1);
 }
 
@@ -1166,7 +1166,7 @@ async function main() {
     if (orchResult.signal === "needs-human") {
       appendSessionCycle("[autonomous] orchestrate", "blocked", "NEEDS_HUMAN_INPUT during planning");
       console.log("\n[BLOCKED] Orchestration needs human input. Run summary written to session.json.");
-      console.log("  To provide input: open-agent-harness resume \"your answer\"");
+      console.log("  To provide input: cortex-harness resume \"your answer\"");
       notify("Claude — Needs Input", `Orchestration blocked | ${userTask.slice(0, 60)}`);
       process.exit(0);
     }
@@ -1228,7 +1228,7 @@ async function main() {
             : "no output written — did not start";
           console.log(`  • ${c.id} (${c.type}) — reason: ${c.partialReason ?? "unknown"} — ${statusNote}`);
         }
-        console.log("\n  To retry: open-agent-harness resume");
+        console.log("\n  To retry: cortex-harness resume");
         notify(
           "Claude — Partial Cycles Skipped",
           `${skippedPartials.length} partial: ${skippedPartials.map((c) => c.id).join(", ")}`,
@@ -1442,7 +1442,7 @@ async function main() {
         appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
         console.log(`\n[BLOCKED] ${cycle.id} needs human input.`);
         console.log(`  Reason: ${cycle.blockedReason.slice(0, 120)}`);
-        console.log(`  To resume: open-agent-harness resume "your answer"`);
+        console.log(`  To resume: cortex-harness resume "your answer"`);
         notify("Claude — Needs Input", `${cycle.id} blocked | ${userTask.slice(0, 60)}`);
         shouldBreak = true;
 
@@ -1490,7 +1490,7 @@ async function main() {
             const remainingAfter = queue.cycles.filter((c) => c.status === "pending");
             if (remainingAfter.length) {
               console.log(
-                `  [WARN] ${cycle.id} is partial — run continues but downstream cycles may be affected. Run: open-agent-harness resume to retry.`,
+                `  [WARN] ${cycle.id} is partial — run continues but downstream cycles may be affected. Run: cortex-harness resume to retry.`,
               );
             }
             notify("Claude — Cycle Partial", `${cycle.id} | ${reason.slice(0, 80)}`);

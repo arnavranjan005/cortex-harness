@@ -26,7 +26,7 @@ Avoid backend implementation work in the backend and distributed scopes unless t
 
 ## Project Shape
 
-- the primary frontend app uses the App Router
+- preserve existing route structure and entry points in the frontend app
 - reusable UI components live in the frontend app's components dir and the shared UI lib
 <!-- cortex:shared-schema -->
 - shared validation lives in `libs/shared/schema`

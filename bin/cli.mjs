@@ -8,16 +8,21 @@ import { createInterface } from "readline/promises";
 import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
 
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const pkgRoot = path.join(__dirname, "..");
+
+const { version: pkgVersion } = _require("../package.json");
 
 const program = new Command();
 
 program
   .name("cortex-harness")
   .description("CLI to scaffold and run an autonomous agent harness")
-  .version("1.0.0");
+  .version(pkgVersion);
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -367,7 +372,7 @@ program
     console.log("\n" + chalk.green("Harness initialized successfully."));
     console.log("\nNext steps:");
     console.log("  1. Review harness.config.json — scope paths are set to your surfaces");
-    console.log("  2. Update .harness/agents/*.agent.md Scope sections to match those paths");
+    console.log("  2. Review .harness/agents/*.agent.md — Scope sections have been auto-patched");
     console.log("  3. Run: cortex-harness run \"your task description\"");
   });
 
@@ -486,7 +491,8 @@ configCmd.action(async () => {
   rl.close();
   if (dirty) {
     await saveHarnessConfig(configPath, config);
-    console.log(chalk.green("\n  harness.config.json saved."));
+    await repatchFromConfig(process.cwd(), config);
+    console.log(chalk.green("\n  harness.config.json saved and agent .md scope sections updated."));
   } else {
     console.log("  No changes made.");
   }
