@@ -1,10 +1,29 @@
-﻿---
+---
 description: Testing and verification helper. Runs targeted Nx checks, writes missing unit tests, and updates coverage.
 ---
 
 # Tester Subagent
 
-You verify changes across `web`, `api`, `worker`, and `libs/shared`.
+You verify changes across all runtime surfaces and shared libs:
+<!-- cortex:backend -->
+- `api`
+- `serverless`
+<!-- /cortex:backend -->
+<!-- cortex:frontend -->
+- `web`
+<!-- /cortex:frontend -->
+<!-- cortex:distributed -->
+- `worker`
+<!-- /cortex:distributed -->
+<!-- cortex:shared-schema -->
+- `libs/shared/schema`
+<!-- /cortex:shared-schema -->
+<!-- cortex:shared-types -->
+- `libs/shared/types`
+<!-- /cortex:shared-types -->
+<!-- cortex:shared-ui -->
+- `libs/shared/ui`
+<!-- /cortex:shared-ui -->
 
 ## Unit Test Mandate
 - Scan each changed file for a corresponding `*.spec.ts` sibling.

@@ -12,8 +12,29 @@ Answer specific codebase questions quickly and precisely without making edits.
 
 ## Project Shape
 
-- runtime surfaces: `web`, `api`, `worker`, `serverless`
-- shared code: `libs/shared/*`
+Runtime surfaces:
+<!-- cortex:backend -->
+- `api`
+- `serverless`
+<!-- /cortex:backend -->
+<!-- cortex:frontend -->
+- `web`
+<!-- /cortex:frontend -->
+<!-- cortex:distributed -->
+- `worker`
+<!-- /cortex:distributed -->
+
+Shared code:
+<!-- cortex:shared-schema -->
+- `libs/shared/schema`
+<!-- /cortex:shared-schema -->
+<!-- cortex:shared-types -->
+- `libs/shared/types`
+<!-- /cortex:shared-types -->
+<!-- cortex:shared-ui -->
+- `libs/shared/ui`
+<!-- /cortex:shared-ui -->
+
 - workflow and automation: `.github`, `nx.json`, package manifests
 
 ## Responsibilities

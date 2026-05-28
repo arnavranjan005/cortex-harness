@@ -224,6 +224,94 @@ function checkAndRevertScopeViolations(cycle) {
   return failed.length ? failed : undefined;
 }
 
+// ── Auto-scope update ─────────────────────────────────────────────────────────
+// When an agent ran unconstrained (scope = []), detect the directories it created
+// and add them to harness.config.json so future cycles get proper enforcement.
+
+function inferScopePath(normalizedFilePath) {
+  const parts = normalizedFilePath.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+  // Standard Nx layouts:
+  //   apps/<name>/...        → apps/<name>/
+  //   libs/<ns>/<name>/...   → libs/<ns>/<name>/   (3 segments)
+  //   libs/<name>/...        → libs/<name>/         (2 segments)
+  // Everything else: first 2 segments.
+  if (parts[0] === "apps") return parts.slice(0, 2).join("/") + "/";
+  if (parts[0] === "libs") return parts.length >= 3
+    ? parts.slice(0, 3).join("/") + "/"
+    : parts.slice(0, 2).join("/") + "/";
+  return parts.slice(0, 2).join("/") + "/";
+}
+
+// Decide which agents should receive a newly-created path.
+// Shared libs go to all implementers; app/feature paths go only to the creator.
+function resolveTargetAgents(scopePath, creatingAgent) {
+  const p = scopePath.toLowerCase();
+  const isSharedLib = p.startsWith("libs/shared/") ||
+    /\/shared\//.test(p);                             // any namespace's shared sub-dir
+  const isUiLib = /\bui\b|components?|design[-_]system/.test(p);
+
+  if (!isSharedLib) return [creatingAgent];           // app or feature lib — owner only
+  if (isUiLib)      return ["frontend-subagent"];     // shared UI — frontend only
+  // general shared lib (schema, types, models, domain…) — all implementers
+  return ["backend-subagent", "frontend-subagent", "distributed-subagent"];
+}
+
+function autoUpdateScope(cycle) {
+  if (!cycle.agent || !cycle.type.startsWith("implement-")) return;
+  const agentConfig = CONFIGURED_AGENTS[cycle.agent];
+  const scope = agentConfig?.scope;
+  if (!scope || scope.length > 0) return; // only act when agent was unconstrained
+
+  const rawJson = readCycleState(cycle.outputFile);
+  if (!rawJson) return;
+  let report;
+  try { report = JSON.parse(rawJson); } catch { return; }
+
+  const filesChanged = report.filesChanged ?? [];
+  const newPaths = new Set();
+  for (const entry of filesChanged) {
+    const filePath = typeof entry === "string" ? entry : (entry.file ?? entry.path ?? "");
+    if (!filePath) continue;
+    const p = inferScopePath(filePath.replace(/\\/g, "/"));
+    if (p) newPaths.add(p);
+  }
+  if (newPaths.size === 0) return;
+
+  const configPath = join(ROOT, "harness.config.json");
+  let config;
+  try { config = JSON.parse(readFileSync(configPath, "utf8")); } catch { return; }
+
+  // Build a map of agent → paths to add
+  const updates = {};
+  for (const newPath of newPaths) {
+    for (const agent of resolveTargetAgents(newPath, cycle.agent)) {
+      if (!config.agents?.[agent]) continue;
+      const existing = config.agents[agent].scope ?? [];
+      if (!existing.includes(newPath)) {
+        (updates[agent] = updates[agent] ?? []).push(newPath);
+      }
+    }
+  }
+  if (Object.keys(updates).length === 0) return;
+
+  for (const [agent, paths] of Object.entries(updates)) {
+    config.agents[agent].scope = [...(config.agents[agent].scope ?? []), ...paths];
+    CONFIGURED_AGENTS[agent] = config.agents[agent]; // update in-memory immediately
+  }
+
+  try {
+    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+    console.log(`\n  [SCOPE] Auto-updated scopes from unconstrained cycle "${cycle.id}":`);
+    for (const [agent, paths] of Object.entries(updates)) {
+      paths.forEach((p) => console.log(`    + ${p}  →  ${agent}`));
+    }
+    appendLog({ type: "harness", event: "scope-auto-updated", cycleId: cycle.id, agent: cycle.agent, updates });
+  } catch (err) {
+    console.warn(`  [SCOPE] Could not update harness.config.json: ${err.message}`);
+  }
+}
+
 function buildScopeCleanupCycle(cycle, failedFiles) {
   const agentName = cycle.agent ?? "unknown-agent";
   return {
@@ -1255,6 +1343,9 @@ async function main() {
             `${cycle.id} | ${result.turnCount} turns`,
             { event: "cycle-complete", cycleId: cycle.id, cycleType: cycle.type, attempt, turnCount: result.turnCount },
           );
+
+          // If agent ran unconstrained (scope=[]), record what it created and lock it in
+          autoUpdateScope(cycle);
 
           // Scope guard: revert any files the agent touched outside its declared scope
           const unrevertable = checkAndRevertScopeViolations(cycle);

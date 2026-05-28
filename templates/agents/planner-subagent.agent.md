@@ -12,11 +12,28 @@ Turn a user request into a concrete execution plan that fits this repo's boundar
 
 ## Project Shape
 
-- main runtime surfaces are `web`, `api`, `worker`, and `serverless`
-- shared code lives in `libs/shared/*`
-- validation belongs in `libs/shared/schema`
-- shared response and domain types belong in `libs/shared/types`
-- reusable UI belongs in `libs/shared/ui`
+Runtime surfaces:
+<!-- cortex:backend -->
+- `api`
+- `serverless`
+<!-- /cortex:backend -->
+<!-- cortex:frontend -->
+- `web`
+<!-- /cortex:frontend -->
+<!-- cortex:distributed -->
+- `worker`
+<!-- /cortex:distributed -->
+
+Shared code:
+<!-- cortex:shared-schema -->
+- `libs/shared/schema` — validation schemas (Zod)
+<!-- /cortex:shared-schema -->
+<!-- cortex:shared-types -->
+- `libs/shared/types` — shared response and domain types
+<!-- /cortex:shared-types -->
+<!-- cortex:shared-ui -->
+- `libs/shared/ui` — reusable UI
+<!-- /cortex:shared-ui -->
 
 ## Responsibilities
 
@@ -29,7 +46,7 @@ Turn a user request into a concrete execution plan that fits this repo's boundar
 
 - Be read-only unless the main agent explicitly asks for planning artifacts to be written to disk
 - Prefer repo-specific plans over generic checklists
-- Keep routes thin, business logic in controllers or services, background work in `worker`, and PDF generation in `serverless`
+- Keep routes thin and business logic in controllers or services
 - Do not assume Prisma schema changes are allowed
 - Treat auth, session, JWT, cookie, CORS, CSRF, and permission changes as approval-required unless explicitly requested
 - Do not ask for or rely on actual `.env` contents in planning output

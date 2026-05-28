@@ -13,7 +13,6 @@ Primary ownership:
 - `nx.json`
 - root `package.json`
 - project package manifests when task-runner or deployment wiring changes
-- `serverless/src/pdf-generator/serverless.yml`
 
 Touch runtime code only when infrastructure wiring directly depends on it.
 
@@ -21,8 +20,16 @@ Touch runtime code only when infrastructure wiring directly depends on it.
 
 - CI runs through `.github/workflows/ci.yml`
 - workspace orchestration runs through Nx
-- `web`, `api`, `worker`, and `serverless` are the main runnable projects
-- PDF deployment concerns live under `serverless`
+- main runnable projects:
+<!-- cortex:backend -->
+  - `api`, `serverless`
+<!-- /cortex:backend -->
+<!-- cortex:frontend -->
+  - `web`
+<!-- /cortex:frontend -->
+<!-- cortex:distributed -->
+  - `worker`
+<!-- /cortex:distributed -->
 
 ## Responsibilities
 
