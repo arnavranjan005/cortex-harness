@@ -116,5 +116,5 @@ Return a summary with exactly these sections:
 | UI copy, style, layout only | `frontend-subagent` only |
 | API response shape or validation change | `backend-subagent` + `frontend-subagent` if UI consumes it |
 | Queue payload or job behavior change | `distributed-subagent` + `backend-subagent` |
-| Shared type or Zod schema change | one owner, all consumers updated |
+| Shared type or validation schema change | one owner, all consumers updated |
 | Multi-surface behavior change | `planner-subagent` first, then implementation agents |

@@ -22,6 +22,12 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
 - **Use the Read tool to read the actual prompt file** and follow its steps in order — do NOT wing it from memory
 - Vague request (no surface/file/error, <15 words): ask 2–3 clarifying questions first
 - Exception: clearly greenfield → Read `create-app.md` immediately (it owns intake)
+- Disambiguation rules:
+  - Wrong output but no thrown error → `fix-bug`
+  - "Change X" / "Update X" but X does not exist yet → `implement-feature`
+  - "Add X" but it clearly replaces or removes existing behavior → `edit-feature`
+  - Unsure between fix and edit → ask "Is the current behavior intentional?" (yes → edit, no → fix)
+  - Multi-surface or ambiguous scope → spawn `planner-subagent` before choosing a prompt
 
 ### 3. Orchestrator role
 - Never edit source files directly — all edits must be delegated to a sub-agent from `.harness/agents/`
@@ -30,8 +36,8 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
   2. Spawn `explorer-subagent` — map existing file/component structure, placement patterns, naming conventions. Do not brief feature agents without this report.
   3. Spawn `planner-subagent` next if task touches >1 surface, placement is unclear, or shared contracts are involved.
   4. Only then brief and spawn feature sub-agents using the explorer/planner reports.
-- Assign ownership per the **sub-agent routing table** in CLAUDE.md
-- **All custom sub-agents are spawned via `Agent(...)` — the role block from `.harness/agents/<name>.agent.md` is what makes the spawn correct.** Always: routing table → identify sub-agent → read `.agent.md` → paste full role block as first section of prompt.
+- Assign ownership per the **sub-agent routing table** in CLAUDE.md — common violation: routing queue/async/worker changes to `backend-subagent` instead of `distributed-subagent`
+- **All custom sub-agents are spawned via `Agent(...)` — the role block from `.harness/agents/<name>.agent.md` is what makes the spawn correct.** Without it the agent has no scope guard, ownership boundaries, or delivery format. Always: routing table → identify sub-agent → read `.agent.md` → paste full role block as first section of prompt.
 - Spawn independent agents in parallel when their write scopes do not overlap
 - Every sub-agent prompt must include all 7 elements: role block, feature context, write ownership, out-of-scope list, verification command, return format, skill guidance ("none available / none matched" is valid; blank is not)
 
@@ -44,8 +50,18 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
 - Always prefix nx commands with the workspace package manager (e.g. `npm exec nx`) — never bare `nx`
 - Never guess CLI flags — check `nx_docs` or `--help` first when unsure
 
-### 6. Reconciliation (after all agents report back)
-- Step 1: Cross-surface contract check — shared types, Zod schemas, interfaces aligned across all surfaces. On failure: re-delegate to owning agent, re-run check, repeat until all agree.
+### 6. Workspace structure rules
+- Inspect the smallest relevant set of files before changing any code
+- Keep shared contracts (schemas, types, UI primitives) in shared libs — never define them inside application files
+- Keep route files thin — business logic belongs in controllers, services, or queue modules
+- Check existing modules before creating new services, helpers, or shared abstractions
+- Extend current patterns before introducing new architecture or tooling
+- Verify assumptions against the source tree — do not trust scaffold-like READMEs
+- Note workspace mismatches (missing dirs, broken references) instead of silently assuming they are intentional
+- Prefer targeted validation for changed surfaces before broad workspace runs
+
+### 7. Reconciliation (after all agents report back)
+- Step 1: Cross-surface contract check — shared types, validation schemas, interfaces aligned across all surfaces. On failure: re-delegate to owning agent, re-run check, repeat until all agree.
 - Step 2: Resolve all out-of-scope gaps — classify each using CLAUDE.md gap table, then fill mandatory re-delegation log:
   - Log columns: Gap | Owning agent | Spawned? | Result
   - Spawned = no anywhere → NOT done, spawn that agent now

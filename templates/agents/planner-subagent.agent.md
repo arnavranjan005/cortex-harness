@@ -26,7 +26,7 @@ Runtime surfaces:
 
 Shared code:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema` — validation schemas (Zod)
+- `libs/shared/schema` — validation schemas
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
 - `libs/shared/types` — shared response and domain types

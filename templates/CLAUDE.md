@@ -28,6 +28,16 @@ If the request has no specific surface, file, behavior, or error mentioned AND i
 | "plan", "design", "how should we approach" (read-only) | Spawn `planner-subagent` |
 | "scaffold", "generate", new lib/project inside existing app | Invoke `nx-generate` skill first, then `implement-feature.md` |
 
+**Disambiguation rules — apply when signals conflict or intent is unclear:**
+
+| Ambiguous case | Resolution |
+|---|---|
+| Wrong output described, but no error thrown | → `fix-bug` (unexpected behavior is a bug) |
+| "Change X" / "Update X" but X does not exist yet | → `implement-feature` |
+| "Add X" but it clearly replaces or removes existing behavior | → `edit-feature` |
+| Unsure between fix and edit | Ask: "Is the current behavior intentional?" — yes → `edit-feature`, no → `fix-bug` |
+| Task touches multiple surfaces and ownership is unclear | Spawn `planner-subagent` first, then route |
+
 **Cycle mode — autonomous harness sessions:**
 
 If your initial prompt begins with `CYCLE CONSTRAINTS`, you are running as a named cycle inside the autonomous harness. Apply these rules immediately:
@@ -82,6 +92,7 @@ The agent that receives the user's request is the orchestrator. It plans, delega
 | Builds, tests, verification | `tester-subagent` |
 | Codebase discovery (read-only) | `explorer-subagent` |
 | Multi-surface or contract-heavy planning (read-only) | `planner-subagent` |
+| CI monitoring and self-healing fixes | `ci-monitor-subagent` |
 
 **Every sub-agent prompt must include:**
 1. The agent's role block (paste from `.harness/agents/<name>.agent.md`)
@@ -102,9 +113,20 @@ At the start of every task, scan the available skills list in the system prompt.
 
 If no skills match: record "none available / none matched" and continue.
 
+**Hard mandates — skill must run before the listed action, no exceptions (only if available in system prompt):**
+- `nx-workspace` before any workspace exploration or agent briefing
+- `nx-generate` before any scaffolding or generator call
+
+**In cycle mode (autonomous harness) — skill propagation protocol:**
+- The `orchestrate` cycle invokes all matching skills and writes output to `.harness/cycle-state/skills.json`
+  Format: `{ "invoked": ["skill-name", ...], "output": { "skill-name": "<one-line summary>" } }`
+  If no skills match: write `{ "invoked": [], "output": {} }` — marks Step 0 complete, not skipped
+- Implement cycles do not re-invoke skills — they read `skills.json` from `cycle-state/` as their `## Skill guidance`
+- If `skills.json` is absent when an implement cycle runs: write "none available / none matched"
+
 ## Reconciliation Protocol (after all agents report back)
 
-1. **Cross-surface contract check** — if any agent changed a shared type, interface, or Zod schema in a shared lib, verify every other consumer used the updated version. On failure: re-delegate to owning agent, re-run check, repeat.
+1. **Cross-surface contract check** — if any agent changed a shared type, interface, or validation schema in a shared lib, verify every other consumer used the updated version. On failure: re-delegate to owning agent, re-run check, repeat.
 
 2. **Resolve out-of-scope gaps** — collect every gap from agent reports. Fill the mandatory re-delegation log:
 
@@ -130,10 +152,12 @@ If no skills match: record "none available / none matched" and continue.
 
 **Pre-delivery gate — check every item before delivering:**
 
-- [ ] Session.json checked at conversation start (FRESH/RESUME handled)
+> In autonomous runs (cycle mode), the harness enforces structural gates between cycles. Items the harness enforces are marked [harness] — verify them against completed `cycle-state/` files rather than inline work.
+
+- [ ] Session.json checked at conversation start (FRESH/RESUME handled) — [harness] in autonomous runs
 - [ ] Prompt file was read with the Read tool — not from memory
 - [ ] `nx-workspace` invoked (or recorded as not available) before explorer
-- [ ] Explorer ran before any sub-agent was briefed
+- [ ] Explorer ran before any sub-agent was briefed — [harness: explore cycle precedes implement cycles]
 - [ ] Planner ran (if >1 surface or shared contracts)
 - [ ] Named sub-agent used per routing table (not generic Agent())
 - [ ] Every sub-agent prompt had all 7 required elements
@@ -142,6 +166,10 @@ If no skills match: record "none available / none matched" and continue.
 - [ ] Consistency check passed (Step 3)
 - [ ] Tester ran `npm exec nx affected --target=build,test,lint` — all pass (Step 4)
 - [ ] Missing tests written — none deferred (Step 4)
+
+**Loop rule:** If any item above is unchecked —
+- **Retroactively actionable** (explorer, planner, tester, tests, contract check, re-delegation gaps): do it now, re-check, repeat until checked
+- **Not retroactively fixable** (session check skipped, wrong prompt used without reading it): flag as process violation in Residual risks — do not block delivery over it
 
 **Deliver a unified summary only after the gate is fully resolved:**
 - **What changed**: files edited per surface, one line each

@@ -27,6 +27,15 @@ Violating any of the above means you have failed this cycle. The only tools you 
    - "change", "update", "modify" existing behavior → edit-feature
    - "create from scratch", greenfield → create-app
 
+3.5. Disambiguate if signals conflict — check in order, stop at the first match:
+   - Wrong/unexpected behavior described but no error thrown → fix-bug (wrong behavior IS a bug)
+   - "Change X" / "Update X" but X does not exist in the codebase → implement-feature
+   - "Add X" but it clearly removes or replaces existing behavior → edit-feature
+   - Task is ambiguous after applying the rules above →
+     NEEDS_HUMAN_INPUT: ask exactly one question to resolve it (e.g. "Is the current behavior intentional?")
+     Do not guess. Do not proceed until the ambiguity is resolved.
+   If none of the above apply, the routed type from Step 3 stands — proceed.
+
 4. Read the matching prompt file with the Read tool:
    .harness/prompts/<type>.md
 
@@ -59,7 +68,7 @@ Violating any of the above means you have failed this cycle. The only tools you 
 
 - explore ALWAYS runs before any implement cycle (mandatory, even when location seems obvious)
 - plan runs before implement if task touches >1 surface OR shared contracts are involved
-- fix-bug reproduce cycle runs BEFORE explore
+- fix-bug reproduce cycle runs BEFORE explore (typecheck + tests first, per fix-bug Step 1)
 - all implement cycles run before reconcile
 - reconcile runs before test
 - test runs before deliver

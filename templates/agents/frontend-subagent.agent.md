@@ -16,7 +16,7 @@ Primary ownership:
 
 Always write new contracts here — never scatter them locally:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema` — all new Zod schemas go here
+- `libs/shared/schema` — all new validation schemas go here
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
 - `libs/shared/types` — all new interfaces and types go here
@@ -39,12 +39,12 @@ Avoid backend implementation work in the backend and distributed scopes unless t
 
 - Use strict TypeScript throughout — no `any`, no implicit `any`, no untyped component props
 - All component props must have explicit interfaces or types; never use inline `{}` or omit prop types
-- **Never define `interface`, `type`, or `z.object()` inside frontend app files** — all new domain types and shared form data shapes belong in the shared types lib; all new Zod schemas belong in the shared schema lib
+- **Never define interfaces, types, or inline validation schemas inside frontend app files** — all new domain types and shared form data shapes belong in the shared types lib; all new validation schemas belong in the shared schema lib
 - If a needed type or schema does not exist in shared yet, create it there — it is within your write scope
-- Use Zod schemas from the shared schema lib for all form validation and client-side runtime parsing — never write inline validation logic in page or component files
-- Export inferred types from Zod schemas (`z.infer<typeof MySchema>`) — do not duplicate definitions
+- Use validation schemas from the shared schema lib for all form validation and client-side runtime parsing — never write inline validation logic in page or component files
+- Export inferred types from validation schemas rather than duplicating definitions
 - Never use `as unknown as T` or similar unsafe casts — fix the type instead
-- **Compliance check before reporting done:** grep your changed frontend files for locally defined `interface `, `type `, and `z.object(` — if any exist that belong in shared, move them before marking complete
+- **Compliance check before reporting done:** check your changed frontend files for locally defined interfaces, types, or inline validation schemas — if any exist that belong in shared, move them before marking complete
 
 ## Architecture Rules
 

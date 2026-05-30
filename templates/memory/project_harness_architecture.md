@@ -83,7 +83,7 @@ Every cycle must end its final message with exactly one:
 - **Turn cap**: test cycle capped at 25 turns/slice; all others at 500 (safety net)
 - **Scope revert**: out-of-scope writes cascade through `git restore → git clean -f → git show HEAD → unlinkSync`
 
-## Zod validation
+## Cycle output validation
 
 `cycle-schemas.mjs` validates all cycle output files after each cycle completes:
 - `test.json` is critical: invalid JSON → treat as failed; missing `passed` field → default `false`

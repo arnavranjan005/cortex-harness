@@ -152,7 +152,9 @@ function checkAndRevertScopeViolations(cycle) {
       try {
         execSync(`git restore "${f}"`, { cwd: ROOT, stdio: "pipe" });
         done = true;
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
 
     // 2. git clean -f — works for new untracked files
@@ -160,7 +162,9 @@ function checkAndRevertScopeViolations(cycle) {
       try {
         execSync(`git clean -f "${f}"`, { cwd: ROOT, stdio: "pipe" });
         done = true;
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
 
     // 3. git show HEAD:<path> → write original content back (tracked file, git restore failed)
@@ -169,7 +173,9 @@ function checkAndRevertScopeViolations(cycle) {
         const original = execSync(`git show HEAD:"${f}"`, { cwd: ROOT });
         writeFileSync(join(ROOT, f), original);
         done = true;
-      } catch { /* fall through — file may not exist in HEAD (new file) */ }
+      } catch {
+        /* fall through — file may not exist in HEAD (new file) */
+      }
     }
 
     // 4. fs.unlinkSync — new file that git can't clean (e.g. inside .gitignore scope)
@@ -177,7 +183,9 @@ function checkAndRevertScopeViolations(cycle) {
       try {
         unlinkSync(join(ROOT, f));
         done = true;
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
 
     if (done) {
@@ -237,9 +245,10 @@ function inferScopePath(normalizedFilePath) {
   //   libs/<name>/...        → libs/<name>/         (2 segments)
   // Everything else: first 2 segments.
   if (parts[0] === "apps") return parts.slice(0, 2).join("/") + "/";
-  if (parts[0] === "libs") return parts.length >= 3
-    ? parts.slice(0, 3).join("/") + "/"
-    : parts.slice(0, 2).join("/") + "/";
+  if (parts[0] === "libs")
+    return parts.length >= 3
+      ? parts.slice(0, 3).join("/") + "/"
+      : parts.slice(0, 2).join("/") + "/";
   return parts.slice(0, 2).join("/") + "/";
 }
 
@@ -247,12 +256,11 @@ function inferScopePath(normalizedFilePath) {
 // Shared libs go to all implementers; app/feature paths go only to the creator.
 function resolveTargetAgents(scopePath, creatingAgent) {
   const p = scopePath.toLowerCase();
-  const isSharedLib = p.startsWith("libs/shared/") ||
-    /\/shared\//.test(p);                             // any namespace's shared sub-dir
+  const isSharedLib = p.startsWith("libs/shared/") || /\/shared\//.test(p); // any namespace's shared sub-dir
   const isUiLib = /\bui\b|components?|design[-_]system/.test(p);
 
-  if (!isSharedLib) return [creatingAgent];           // app or feature lib — owner only
-  if (isUiLib)      return ["frontend-subagent"];     // shared UI — frontend only
+  if (!isSharedLib) return [creatingAgent]; // app or feature lib — owner only
+  if (isUiLib) return ["frontend-subagent"]; // shared UI — frontend only
   // general shared lib (schema, types, models, domain…) — all implementers
   return ["backend-subagent", "frontend-subagent", "distributed-subagent"];
 }
@@ -266,12 +274,17 @@ function autoUpdateScope(cycle) {
   const rawJson = readCycleState(cycle.outputFile);
   if (!rawJson) return;
   let report;
-  try { report = JSON.parse(rawJson); } catch { return; }
+  try {
+    report = JSON.parse(rawJson);
+  } catch {
+    return;
+  }
 
   const filesChanged = report.filesChanged ?? [];
   const newPaths = new Set();
   for (const entry of filesChanged) {
-    const filePath = typeof entry === "string" ? entry : (entry.file ?? entry.path ?? "");
+    const filePath =
+      typeof entry === "string" ? entry : (entry.file ?? entry.path ?? "");
     if (!filePath) continue;
     const p = inferScopePath(filePath.replace(/\\/g, "/"));
     if (p) newPaths.add(p);
@@ -280,7 +293,11 @@ function autoUpdateScope(cycle) {
 
   const configPath = join(ROOT, "harness.config.json");
   let config;
-  try { config = JSON.parse(readFileSync(configPath, "utf8")); } catch { return; }
+  try {
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return;
+  }
 
   // Build a map of agent → paths to add
   const updates = {};
@@ -296,19 +313,32 @@ function autoUpdateScope(cycle) {
   if (Object.keys(updates).length === 0) return;
 
   for (const [agent, paths] of Object.entries(updates)) {
-    config.agents[agent].scope = [...(config.agents[agent].scope ?? []), ...paths];
+    config.agents[agent].scope = [
+      ...(config.agents[agent].scope ?? []),
+      ...paths,
+    ];
     CONFIGURED_AGENTS[agent] = config.agents[agent]; // update in-memory immediately
   }
 
   try {
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
-    console.log(`\n  [SCOPE] Auto-updated scopes from unconstrained cycle "${cycle.id}":`);
+    console.log(
+      `\n  [SCOPE] Auto-updated scopes from unconstrained cycle "${cycle.id}":`,
+    );
     for (const [agent, paths] of Object.entries(updates)) {
       paths.forEach((p) => console.log(`    + ${p}  →  ${agent}`));
     }
-    appendLog({ type: "harness", event: "scope-auto-updated", cycleId: cycle.id, agent: cycle.agent, updates });
+    appendLog({
+      type: "harness",
+      event: "scope-auto-updated",
+      cycleId: cycle.id,
+      agent: cycle.agent,
+      updates,
+    });
   } catch (err) {
-    console.warn(`  [SCOPE] Could not update harness.config.json: ${err.message}`);
+    console.warn(
+      `  [SCOPE] Could not update harness.config.json: ${err.message}`,
+    );
   }
 }
 
@@ -330,16 +360,44 @@ function buildScopeCleanupCycle(cycle, failedFiles) {
 
 // ── Task input ────────────────────────────────────────────────────────────────
 
-let userTask = process.argv.slice(2).join(" ").trim();
+const cliTask = process.argv.slice(2).join(" ").trim();
+let userTask = cliTask;
+
 if (!userTask) {
+  // No CLI arg — try reading task from existing queue (resume case)
   try {
     const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
     if (existingQueue?.task) {
       userTask = existingQueue.task;
       console.log(`[resume] Using task from task-queue.json: ${userTask}`);
     }
-  } catch { /* no queue yet */ }
+  } catch {
+    /* no queue yet */
+  }
+} else {
+  // CLI task provided — check if it differs from the existing queue
+  try {
+    const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
+    if (existingQueue?.task && existingQueue.task !== cliTask) {
+      console.log(
+        `[new-task] Task differs from task-queue.json — clearing old state for fresh run.`,
+      );
+      unlinkSync(QUEUE_FILE);
+      if (existsSync(CYCLE_DIR)) {
+        for (const f of readdirSync(CYCLE_DIR)) {
+          try {
+            unlinkSync(join(CYCLE_DIR, f));
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+  } catch {
+    /* queue not found or invalid — fresh run, nothing to clear */
+  }
 }
+
 if (!userTask) {
   console.error('Usage: cortex-harness run "your task description"');
   process.exit(1);
@@ -366,7 +424,9 @@ let totalSpentUsd = 0;
 function appendLog(obj) {
   try {
     appendFileSync(runLogFile, JSON.stringify(obj) + "\n", "utf8");
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 }
 
 function buildNotificationMeta(extra = {}) {
@@ -472,18 +532,30 @@ function safeToParallelize(batch) {
     const scope = agentConfig?.scope;
 
     if (scope === null) {
-      appendLog({ type: "parallel-demote", reason: `${agentName} must be sequential`, cycleId: c.id });
+      appendLog({
+        type: "parallel-demote",
+        reason: `${agentName} must be sequential`,
+        cycleId: c.id,
+      });
       return false;
     }
 
     if (scope === undefined) {
-      appendLog({ type: "parallel-warn", reason: `unknown agent ${agentName}, assuming no write scope`, cycleId: c.id });
+      appendLog({
+        type: "parallel-warn",
+        reason: `unknown agent ${agentName}, assuming no write scope`,
+        cycleId: c.id,
+      });
       continue;
     }
 
     for (const p of scope) {
       if (claimed.has(p)) {
-        appendLog({ type: "parallel-demote", reason: `path overlap on "${p}"`, cycleIds: [claimed.get(p), c.id] });
+        appendLog({
+          type: "parallel-demote",
+          reason: `path overlap on "${p}"`,
+          cycleIds: [claimed.get(p), c.id],
+        });
         return false;
       }
       claimed.set(p, c.id);
@@ -510,7 +582,9 @@ function nextCycleBatch(queue) {
   if (batch.length === 1) return batch;
 
   if (!safeToParallelize(batch)) {
-    console.log(`  [SERIALIZE] Write-scope overlap detected — running ${batch[0].id} alone`);
+    console.log(
+      `  [SERIALIZE] Write-scope overlap detected — running ${batch[0].id} alone`,
+    );
     return [batch[0]];
   }
 
@@ -518,7 +592,8 @@ function nextCycleBatch(queue) {
 }
 
 function readSession() {
-  if (!existsSync(SESSION_FILE)) return { sessionId: null, startTime: null, cycles: [], risks: [] };
+  if (!existsSync(SESSION_FILE))
+    return { sessionId: null, startTime: null, cycles: [], risks: [] };
   try {
     return JSON.parse(readFileSync(SESSION_FILE, "utf8"));
   } catch {
@@ -543,9 +618,10 @@ function appendSessionCycle(description, outcome, reason) {
 // ── Turn-cap summary helper ───────────────────────────────────────────────────
 
 async function requestTurnCapSummary(cycleId, assistantLog) {
-  const messages = Array.isArray(assistantLog) && assistantLog.length
-    ? assistantLog.map((text, i) => `[Turn ${i + 1}]:\n${text}`).join("\n\n")
-    : "(none captured)";
+  const messages =
+    Array.isArray(assistantLog) && assistantLog.length
+      ? assistantLog.map((text, i) => `[Turn ${i + 1}]:\n${text}`).join("\n\n")
+      : "(none captured)";
 
   const prompt = `You are summarizing progress from a test cycle that was cut off by a turn limit.
 
@@ -565,7 +641,11 @@ Reply with only the summary, no preamble.`;
     let output = "";
     let proc;
     const timeout = setTimeout(() => {
-      try { killProc(proc); } catch { /* already gone */ }
+      try {
+        killProc(proc);
+      } catch {
+        /* already gone */
+      }
       resolve("(summary timed out)");
     }, 60_000);
 
@@ -580,18 +660,37 @@ Reply with only the summary, no preamble.`;
       );
       proc = spawn(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", summaryPsFile],
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          summaryPsFile,
+        ],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     } else {
       proc = spawn(
         "claude",
-        ["-p", prompt, "--output-format", "text", "--max-turns", "3", "--max-budget-usd", "0.10", "--dangerously-skip-permissions"],
+        [
+          "-p",
+          prompt,
+          "--output-format",
+          "text",
+          "--max-turns",
+          "3",
+          "--max-budget-usd",
+          "0.10",
+          "--dangerously-skip-permissions",
+        ],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     }
 
-    proc.stdout.on("data", (chunk) => { output += chunk.toString("utf8"); });
+    proc.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+    });
     proc.on("close", () => {
       clearTimeout(timeout);
       resolve(output.trim() || "(no summary returned)");
@@ -663,43 +762,58 @@ Current cycle: ${cycle.id}`;
     const reconcile = readCycleState("reconcile.json");
     if (skills) parts.push(`## Skill guidance\n\`\`\`json\n${skills}\n\`\`\``);
     if (answers)
-      parts.push(`## Human approvals and answers\n\`\`\`json\n${answers}\n\`\`\``);
+      parts.push(
+        `## Human approvals and answers\n\`\`\`json\n${answers}\n\`\`\``,
+      );
     if (scopeViol)
       parts.push(
         `## Scope violations from prior cycles\n` +
           `Files marked "reverted" are clean. Files in "couldNotRevert" are still present in a modified state — do NOT re-implement them; flag as a gap instead.\n` +
           `\`\`\`json\n${scopeViol}\n\`\`\``,
       );
-    if (explore) parts.push(`## Explorer report\n\`\`\`json\n${explore}\n\`\`\``);
+    if (explore)
+      parts.push(`## Explorer report\n\`\`\`json\n${explore}\n\`\`\``);
     if (plan) parts.push(`## Planner report\n\`\`\`json\n${plan}\n\`\`\``);
     const queue = readQueue();
     if (queue) {
       for (const c of queue.cycles) {
-        if (c.type.startsWith("implement-") && c.status === "done" && c.outputFile) {
+        if (
+          c.type.startsWith("implement-") &&
+          c.status === "done" &&
+          c.outputFile
+        ) {
           const impl = readCycleState(c.outputFile);
           if (impl)
-            parts.push(`## Implementation report (${c.id})\n\`\`\`json\n${impl}\n\`\`\``);
+            parts.push(
+              `## Implementation report (${c.id})\n\`\`\`json\n${impl}\n\`\`\``,
+            );
         }
       }
     }
-    if (reconcile) parts.push(`## Reconcile report\n\`\`\`json\n${reconcile}\n\`\`\``);
+    if (reconcile)
+      parts.push(`## Reconcile report\n\`\`\`json\n${reconcile}\n\`\`\``);
     return parts.length ? "\n\n" + parts.join("\n\n") : "";
   };
 
   // ── AGENT ROLE ────────────────────────────────────────────────────────────
-  const agentName = cycle.agent
-    ?? (cycle.type.startsWith("implement-")
-        ? cycle.type.replace("implement-", "") + "-subagent"
-        : null);
+  const agentName =
+    cycle.agent ??
+    (cycle.type.startsWith("implement-")
+      ? cycle.type.replace("implement-", "") + "-subagent"
+      : null);
   const agentRole = agentName ? readAgentMd(agentName) : "";
 
   // ── CYCLE OUTPUTS (for deliver) ───────────────────────────────────────────
   const assembleCycleOutputs = () => {
     const stateFiles = [
-      "explore.json", "plan.json",
-      "implement-backend.json", "implement-frontend.json",
-      "implement-distributed.json", "implement-infra.json",
-      "reconcile.json", "test.json",
+      "explore.json",
+      "plan.json",
+      "implement-backend.json",
+      "implement-frontend.json",
+      "implement-distributed.json",
+      "implement-infra.json",
+      "reconcile.json",
+      "test.json",
     ];
     const parts = [];
     for (const f of stateFiles) {
@@ -742,16 +856,21 @@ Current cycle: ${cycle.id}`;
     // Injected when auto-revert failed — the owning agent must undo its out-of-scope changes
     const failedFiles =
       (cycle.notes ?? "")
-        .match(/must undo those changes — restore each file to its pre-cycle state\.(.*)$/)?.[1]
+        .match(
+          /must undo those changes — restore each file to its pre-cycle state\.(.*)$/,
+        )?.[1]
         ?.trim()
-        .split(", ")
-        ?? (cycle.notes ?? "").match(/files: (.+)$/)?.[1]?.split(", ")
-        ?? [];
+        .split(", ") ??
+      (cycle.notes ?? "").match(/files: (.+)$/)?.[1]?.split(", ") ??
+      [];
     templateContent =
       `${CONSTRAINTS}\n\n${agentRole}\n\n` +
       `SCOPE CLEANUP — you are the agent that wrote files outside your declared scope in a prior cycle.\n` +
       `The harness tried to auto-revert these files but could not:\n` +
-      (failedFiles.length ? failedFiles.map((f) => `  - ${f}`).join("\n") : `  (see cycle notes: ${cycle.notes ?? "none"})`) + `\n\n` +
+      (failedFiles.length
+        ? failedFiles.map((f) => `  - ${f}`).join("\n")
+        : `  (see cycle notes: ${cycle.notes ?? "none"})`) +
+      `\n\n` +
       `Your task:\n` +
       `1. For each file listed above, restore it to the state it was in before your cycle ran.\n` +
       `   - If you added the file: delete it entirely.\n` +
@@ -762,7 +881,9 @@ Current cycle: ${cycle.id}`;
       `{ "fixed": ["<file restored>", ...], "notes": "" }\n\n` +
       `Task context: ${userTask}`;
   } else {
-    const templateKey = cycle.type.startsWith("implement-") ? "implement" : cycle.type;
+    const templateKey = cycle.type.startsWith("implement-")
+      ? "implement"
+      : cycle.type;
     const templatePath = join(PROMPTS_DIR, `${templateKey}.md`);
     templateContent = existsSync(templatePath)
       ? readFileSync(templatePath, "utf8")
@@ -794,12 +915,12 @@ async function runCycle(cycle, remainingBudgetUsd) {
   const prompt = buildCyclePrompt(cycle);
 
   return new Promise((resolve) => {
-    let turnCount = 0;        // streaming chunk count (activity dots only)
-    let liveTurnCount = 0;    // user-event count = turns completed (live, accurate to N-1)
-    let realTurnCount = 0;    // num_turns from Claude's result event (authoritative, N)
+    let turnCount = 0; // streaming chunk count (activity dots only)
+    let liveTurnCount = 0; // user-event count = turns completed (live, accurate to N-1)
+    let realTurnCount = 0; // num_turns from Claude's result event (authoritative, N)
     let finalMessage = "";
-    let rawText = "";          // non-JSON stdout lines — fallback for signal detection
-    const assistantLog = [];   // rolling log of assistant text messages for turn-cap summary
+    let rawText = ""; // non-JSON stdout lines — fallback for signal detection
+    const assistantLog = []; // rolling log of assistant text messages for turn-cap summary
     let deadManTimer = null;
     let settled = false;
 
@@ -849,7 +970,10 @@ async function runCycle(cycle, remainingBudgetUsd) {
         console.log(
           `\n[HUNG] Cycle ${cycle.id} silent for 20 min after ${realTurnCount || liveTurnCount || turnCount} turns`,
         );
-        notify("Claude — Cycle Hung", `${cycle.id} | ${realTurnCount || liveTurnCount || turnCount} turns`);
+        notify(
+          "Claude — Cycle Hung",
+          `${cycle.id} | ${realTurnCount || liveTurnCount || turnCount} turns`,
+        );
         killProc(proc);
         resolveOnce({
           signal: "hung",
@@ -859,7 +983,9 @@ async function runCycle(cycle, remainingBudgetUsd) {
       }, DEAD_MAN_MS);
     }
 
-    const budgetArg = String(Math.max(0.5, Number(remainingBudgetUsd.toFixed(2))));
+    const budgetArg = String(
+      Math.max(0.5, Number(remainingBudgetUsd.toFixed(2))),
+    );
 
     let proc;
     if (isWindows) {
@@ -882,20 +1008,41 @@ async function runCycle(cycle, remainingBudgetUsd) {
       );
       proc = spawn(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", psFile],
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          psFile,
+        ],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     } else {
       proc = spawn(
         "claude",
-        ["-p", prompt, "--output-format", "stream-json", "--verbose", "--max-budget-usd", budgetArg, "--dangerously-skip-permissions"],
+        [
+          "-p",
+          prompt,
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--max-budget-usd",
+          budgetArg,
+          "--dangerously-skip-permissions",
+        ],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     }
 
     proc.on("error", (err) => {
       clearTimeout(deadManTimer);
-      appendLog({ type: "harness", event: "spawn-error", cycleId: cycle.id, error: err.message });
+      appendLog({
+        type: "harness",
+        event: "spawn-error",
+        cycleId: cycle.id,
+        error: err.message,
+      });
       resolveOnce({
         signal: "error",
         error: err.message,
@@ -949,13 +1096,20 @@ async function runCycle(cycle, remainingBudgetUsd) {
                     liveTurnCount,
                     cap,
                   });
-                  console.log(`\n  [TURN CAP] ${cycle.id} hit ${cap}-turn limit — stopping`);
+                  console.log(
+                    `\n  [TURN CAP] ${cycle.id} hit ${cap}-turn limit — stopping`,
+                  );
 
                   if (cycle.outputFile) {
                     console.log(`  [SUMMARY] Requesting progress summary...`);
                     killProc(proc);
-                    const summary = await requestTurnCapSummary(cycle.id, assistantLog);
-                    console.log(`  [SUMMARY] ${summary.slice(0, 120)}${summary.length > 120 ? "…" : ""}`);
+                    const summary = await requestTurnCapSummary(
+                      cycle.id,
+                      assistantLog,
+                    );
+                    console.log(
+                      `  [SUMMARY] ${summary.slice(0, 120)}${summary.length > 120 ? "…" : ""}`,
+                    );
 
                     // Accumulate history across retries so each attempt sees what prior ones did
                     let priorHistory = [];
@@ -963,8 +1117,11 @@ async function runCycle(cycle, remainingBudgetUsd) {
                       const prior = JSON.parse(
                         readFileSync(join(CYCLE_DIR, cycle.outputFile), "utf8"),
                       );
-                      if (Array.isArray(prior.history)) priorHistory = prior.history;
-                    } catch { /* no prior file or unparseable — start fresh */ }
+                      if (Array.isArray(prior.history))
+                        priorHistory = prior.history;
+                    } catch {
+                      /* no prior file or unparseable — start fresh */
+                    }
 
                     const history = [
                       ...priorHistory,
@@ -980,17 +1137,23 @@ async function runCycle(cycle, remainingBudgetUsd) {
                     try {
                       writeFileSync(
                         join(CYCLE_DIR, cycle.outputFile),
-                        JSON.stringify({
-                          passed: false,
-                          partial: true,
-                          turnsUsed: liveTurnCount,
-                          partialReason: `turn-cap (${liveTurnCount}/${cap})`,
-                          history,
-                          note: `This cycle has been partially attempted ${history.length} time(s) — see history[]. Check filesystem for spec files already written — do NOT re-write them. Focus only on missing specs and remaining test failures.`,
-                        }, null, 2),
+                        JSON.stringify(
+                          {
+                            passed: false,
+                            partial: true,
+                            turnsUsed: liveTurnCount,
+                            partialReason: `turn-cap (${liveTurnCount}/${cap})`,
+                            history,
+                            note: `This cycle has been partially attempted ${history.length} time(s) — see history[]. Check filesystem for spec files already written — do NOT re-write them. Focus only on missing specs and remaining test failures.`,
+                          },
+                          null,
+                          2,
+                        ),
                         "utf8",
                       );
-                    } catch { /* best-effort */ }
+                    } catch {
+                      /* best-effort */
+                    }
                   }
 
                   resolveOnce({
@@ -1009,23 +1172,43 @@ async function runCycle(cycle, remainingBudgetUsd) {
               typeof event.result === "string"
                 ? event.result
                 : JSON.stringify(event.result ?? "");
-            if (typeof event.num_turns === "number") realTurnCount = event.num_turns;
-            if (typeof event.total_cost_usd === "number") totalSpentUsd += event.total_cost_usd;
+            if (typeof event.num_turns === "number")
+              realTurnCount = event.num_turns;
+            if (typeof event.total_cost_usd === "number")
+              totalSpentUsd += event.total_cost_usd;
 
             const signal = detectSignal(finalMessage, 0);
             let resolvedMessage = finalMessage;
 
             // 0-turn silent failure: claimed complete but wrote no output
-            if (signal === "complete" && realTurnCount === 0 && cycle.outputFile) {
+            if (
+              signal === "complete" &&
+              realTurnCount === 0 &&
+              cycle.outputFile
+            ) {
               if (!existsSync(join(CYCLE_DIR, cycle.outputFile))) {
-                appendLog({ type: "harness", event: "0-turn-silent-failure", cycleId: cycle.id });
+                appendLog({
+                  type: "harness",
+                  event: "0-turn-silent-failure",
+                  cycleId: cycle.id,
+                });
                 console.log(
                   `  [WARN] ${cycle.id} claimed complete with 0 turns and no output file — treating as partial`,
                 );
                 resolvedMessage = `CYCLE_PARTIAL:0-turn cycle wrote no output (${cycle.outputFile}) — silent failure`;
-                resolveOnce({ signal: "partial", code: 0, turnCount: 0, finalMessage: resolvedMessage });
+                resolveOnce({
+                  signal: "partial",
+                  code: 0,
+                  turnCount: 0,
+                  finalMessage: resolvedMessage,
+                });
               } else {
-                resolveOnce({ signal, code: 0, turnCount: 0, finalMessage: resolvedMessage });
+                resolveOnce({
+                  signal,
+                  code: 0,
+                  turnCount: 0,
+                  finalMessage: resolvedMessage,
+                });
               }
             } else {
               resolveOnce({
@@ -1040,8 +1223,14 @@ async function runCycle(cycle, remainingBudgetUsd) {
             // Promise is already resolved above — this is pure cleanup.
             if (!resultGraceTimer) {
               resultGraceTimer = setTimeout(() => {
-                appendLog({ type: "harness", event: "result-grace-kill", cycleId: cycle.id });
-                console.log(`\n  [GRACE] ${cycle.id}: killing subprocess after ${RESULT_GRACE_MS / 1000}s grace`);
+                appendLog({
+                  type: "harness",
+                  event: "result-grace-kill",
+                  cycleId: cycle.id,
+                });
+                console.log(
+                  `\n  [GRACE] ${cycle.id}: killing subprocess after ${RESULT_GRACE_MS / 1000}s grace`,
+                );
                 killProc(proc);
               }, RESULT_GRACE_MS);
             }
@@ -1058,7 +1247,11 @@ async function runCycle(cycle, remainingBudgetUsd) {
     });
 
     proc.stderr.on("data", (chunk) => {
-      appendLog({ type: "stderr", cycleId: cycle.id, data: chunk.toString("utf8") });
+      appendLog({
+        type: "stderr",
+        cycleId: cycle.id,
+        data: chunk.toString("utf8"),
+      });
     });
 
     proc.on("close", (code) => {
@@ -1070,19 +1263,37 @@ async function runCycle(cycle, remainingBudgetUsd) {
       const effectiveTurnCount = realTurnCount || liveTurnCount || turnCount;
       let resolvedMessage = effectiveMessage;
 
-      if (signal === "complete" && effectiveTurnCount === 0 && cycle.outputFile) {
+      if (
+        signal === "complete" &&
+        effectiveTurnCount === 0 &&
+        cycle.outputFile
+      ) {
         if (!existsSync(join(CYCLE_DIR, cycle.outputFile))) {
-          appendLog({ type: "harness", event: "0-turn-silent-failure", cycleId: cycle.id });
+          appendLog({
+            type: "harness",
+            event: "0-turn-silent-failure",
+            cycleId: cycle.id,
+          });
           console.log(
             `  [WARN] ${cycle.id} claimed complete with 0 turns and no output file — treating as partial`,
           );
           resolvedMessage = `CYCLE_PARTIAL:0-turn cycle wrote no output (${cycle.outputFile}) — silent failure`;
-          resolveOnce({ signal: "partial", code, turnCount: effectiveTurnCount, finalMessage: resolvedMessage });
+          resolveOnce({
+            signal: "partial",
+            code,
+            turnCount: effectiveTurnCount,
+            finalMessage: resolvedMessage,
+          });
           return;
         }
       }
 
-      resolveOnce({ signal, code, turnCount: effectiveTurnCount, finalMessage: resolvedMessage });
+      resolveOnce({
+        signal,
+        code,
+        turnCount: effectiveTurnCount,
+        finalMessage: resolvedMessage,
+      });
     });
   });
 }
@@ -1115,7 +1326,12 @@ async function runCycleBatch(batch, remainingBudget) {
     });
     return {
       cycle: batch[i],
-      result: { signal: "error", error: s.reason?.message, turnCount: 0, finalMessage: "" },
+      result: {
+        signal: "error",
+        error: s.reason?.message,
+        turnCount: 0,
+        finalMessage: "",
+      },
     };
   });
 }
@@ -1132,8 +1348,15 @@ async function main() {
   console.log(`Log    : ${runLogFile}`);
   console.log("─────────────────────────────────────────────────");
 
-  appendLog({ type: "harness", event: "run-start", task: userTask, timestamp: new Date().toISOString() });
-  notify("Claude — Run Started", userTask.slice(0, 120), { event: "run-start" });
+  appendLog({
+    type: "harness",
+    event: "run-start",
+    task: userTask,
+    timestamp: new Date().toISOString(),
+  });
+  notify("Claude — Run Started", userTask.slice(0, 120), {
+    event: "run-start",
+  });
 
   // ── Phase 1: Orchestrate (build the queue) ──────────────────────────────────
 
@@ -1143,7 +1366,11 @@ async function main() {
     console.log("\n[orchestrate] Planning cycles...");
     process.stdout.write("Progress : ");
 
-    const orchCycle = { id: "orchestrate", type: "orchestrate", status: "pending" };
+    const orchCycle = {
+      id: "orchestrate",
+      type: "orchestrate",
+      status: "pending",
+    };
     notify("Claude — Cycle Started", "orchestrate (orchestrate) | attempt 1", {
       event: "cycle-started",
       cycleId: orchCycle.id,
@@ -1151,7 +1378,10 @@ async function main() {
       attempt: 1,
     });
 
-    const orchResult = await runCycle(orchCycle, MAX_BUDGET_USD - totalSpentUsd);
+    const orchResult = await runCycle(
+      orchCycle,
+      MAX_BUDGET_USD - totalSpentUsd,
+    );
     appendLog({ type: "cycle-result", cycleId: "orchestrate", ...orchResult });
 
     if (orchResult.signal === "complete") {
@@ -1164,10 +1394,19 @@ async function main() {
     }
 
     if (orchResult.signal === "needs-human") {
-      appendSessionCycle("[autonomous] orchestrate", "blocked", "NEEDS_HUMAN_INPUT during planning");
-      console.log("\n[BLOCKED] Orchestration needs human input. Run summary written to session.json.");
-      console.log("  To provide input: cortex-harness resume \"your answer\"");
-      notify("Claude — Needs Input", `Orchestration blocked | ${userTask.slice(0, 60)}`);
+      appendSessionCycle(
+        "[autonomous] orchestrate",
+        "blocked",
+        "NEEDS_HUMAN_INPUT during planning",
+      );
+      console.log(
+        "\n[BLOCKED] Orchestration needs human input. Run summary written to session.json.",
+      );
+      console.log('  To provide input: cortex-harness resume "your answer"');
+      notify(
+        "Claude — Needs Input",
+        `Orchestration blocked | ${userTask.slice(0, 60)}`,
+      );
       process.exit(0);
     }
 
@@ -1178,8 +1417,13 @@ async function main() {
 
     queue = readQueue();
     if (!queue) {
-      console.log("\n[ERROR] Orchestrator did not write task-queue.json. Aborting.");
-      notify("Claude — Run Failed", "No task queue produced by orchestrate cycle");
+      console.log(
+        "\n[ERROR] Orchestrator did not write task-queue.json. Aborting.",
+      );
+      notify(
+        "Claude — Run Failed",
+        "No task queue produced by orchestrate cycle",
+      );
       process.exit(1);
     }
 
@@ -1188,7 +1432,11 @@ async function main() {
     if (!queueValidation.valid) {
       console.log("\n[WARN] task-queue.json schema issues:");
       queueValidation.errors.forEach((e) => console.log(`  - ${e}`));
-      appendLog({ type: "validation-warning", file: "task-queue.json", errors: queueValidation.errors });
+      appendLog({
+        type: "validation-warning",
+        file: "task-queue.json",
+        errors: queueValidation.errors,
+      });
       // Proceed — queue may still be usable with partial fields
     }
   }
@@ -1206,7 +1454,9 @@ async function main() {
   while (true) {
     const remaining = MAX_BUDGET_USD - totalSpentUsd;
     if (remaining <= 0.1) {
-      console.log(`\n[BUDGET] $${MAX_BUDGET_USD} exhausted ($${totalSpentUsd.toFixed(2)} spent). Stopping.`);
+      console.log(
+        `\n[BUDGET] $${MAX_BUDGET_USD} exhausted ($${totalSpentUsd.toFixed(2)} spent). Stopping.`,
+      );
       notify("Claude — Budget Exhausted", `$${totalSpentUsd.toFixed(2)} spent`);
       break;
     }
@@ -1214,9 +1464,13 @@ async function main() {
     const batch = nextCycleBatch(queue);
     if (!batch) {
       console.log("\n[DONE] All cycles complete.");
-      const skippedPartials = queue.cycles.filter((c) => c.status === "partial");
+      const skippedPartials = queue.cycles.filter(
+        (c) => c.status === "partial",
+      );
       if (skippedPartials.length) {
-        console.log(`\n[WARN] ${skippedPartials.length} cycle(s) marked partial during this run:`);
+        console.log(
+          `\n[WARN] ${skippedPartials.length} cycle(s) marked partial during this run:`,
+        );
         for (const c of skippedPartials) {
           const outputWritten = cycleOutputWritten(c);
           const outputLabel =
@@ -1226,7 +1480,9 @@ async function main() {
           const statusNote = outputWritten
             ? `output saved (${outputLabel}) — resume to continue`
             : "no output written — did not start";
-          console.log(`  • ${c.id} (${c.type}) — reason: ${c.partialReason ?? "unknown"} — ${statusNote}`);
+          console.log(
+            `  • ${c.id} (${c.type}) — reason: ${c.partialReason ?? "unknown"} — ${statusNote}`,
+          );
         }
         console.log("\n  To retry: cortex-harness resume");
         notify(
@@ -1244,9 +1500,13 @@ async function main() {
     // Label for logging
     if (batch.length === 1) {
       const attempt = (retryCount[batch[0].id] ?? 0) + 1;
-      console.log(`\n[cycle${attempt > 1 ? ` retry ${attempt}` : ""}] ${batch[0].id} (${batch[0].type})`);
+      console.log(
+        `\n[cycle${attempt > 1 ? ` retry ${attempt}` : ""}] ${batch[0].id} (${batch[0].type})`,
+      );
     } else {
-      console.log(`\n[parallel ×${batch.length}] ${batch.map((c) => c.id).join(" + ")}`);
+      console.log(
+        `\n[parallel ×${batch.length}] ${batch.map((c) => c.id).join(" + ")}`,
+      );
     }
     process.stdout.write("Progress : ");
 
@@ -1255,7 +1515,12 @@ async function main() {
       notify(
         "Claude — Cycle Started",
         `${batch[0].id} (${batch[0].type}) | attempt ${attempt}`,
-        { event: "cycle-started", cycleId: batch[0].id, cycleType: batch[0].type, attempt },
+        {
+          event: "cycle-started",
+          cycleId: batch[0].id,
+          cycleType: batch[0].type,
+          attempt,
+        },
       );
     } else {
       notify(
@@ -1271,7 +1536,12 @@ async function main() {
     for (const { cycle, result } of batchResults) {
       const attempt = (retryCount[cycle.id] ?? 0) + 1;
       retryCount[cycle.id] = attempt;
-      appendLog({ type: "cycle-result", cycleId: cycle.id, attempt, ...result });
+      appendLog({
+        type: "cycle-result",
+        cycleId: cycle.id,
+        attempt,
+        ...result,
+      });
 
       // ── Complete ────────────────────────────────────────────────────────────
 
@@ -1299,7 +1569,12 @@ async function main() {
                 console.log(
                   `  [ERROR] ${cycle.id} wrote unparseable JSON to ${cycle.outputFile} — treating as failed`,
                 );
-                appendLog({ type: "validation-error", cycleId: cycle.id, file: cycle.outputFile, error: "invalid-json" });
+                appendLog({
+                  type: "validation-error",
+                  cycleId: cycle.id,
+                  file: cycle.outputFile,
+                  error: "invalid-json",
+                });
                 result.signal = "failed";
               } else {
                 console.log(
@@ -1312,13 +1587,22 @@ async function main() {
             if (parsed !== null) {
               const validation = validateCycleOutput(cycle.outputFile, parsed);
               if (!validation.valid && !validation.skipped) {
-                console.log(`  [WARN] ${cycle.id} schema mismatch (${validation.schemaName}):`);
+                console.log(
+                  `  [WARN] ${cycle.id} schema mismatch (${validation.schemaName}):`,
+                );
                 validation.errors.forEach((e) => console.log(`    - ${e}`));
-                appendLog({ type: "validation-warning", cycleId: cycle.id, errors: validation.errors });
+                appendLog({
+                  type: "validation-warning",
+                  cycleId: cycle.id,
+                  errors: validation.errors,
+                });
                 if (isCritical) {
-                  const defaults = CONSERVATIVE_DEFAULTS[cycle.outputFile] ?? {};
+                  const defaults =
+                    CONSERVATIVE_DEFAULTS[cycle.outputFile] ?? {};
                   testReport = { ...defaults, ...parsed };
-                  console.log(`  [INFO] Using conservative defaults for missing critical fields in ${cycle.outputFile}`);
+                  console.log(
+                    `  [INFO] Using conservative defaults for missing critical fields in ${cycle.outputFile}`,
+                  );
                 }
               } else if (parsed !== null) {
                 testReport = parsed;
@@ -1335,13 +1619,20 @@ async function main() {
           writeQueue(queue);
           appendSessionCycle(`[autonomous] ${cycle.id}`, "done");
 
-          if (batch.length === 1) console.log(`  [OK] ${result.turnCount} turns`);
+          if (batch.length === 1)
+            console.log(`  [OK] ${result.turnCount} turns`);
           else console.log(`  [OK] ${cycle.id} — ${result.turnCount} turns`);
 
           notify(
             "Claude — Cycle Complete",
             `${cycle.id} | ${result.turnCount} turns`,
-            { event: "cycle-complete", cycleId: cycle.id, cycleType: cycle.type, attempt, turnCount: result.turnCount },
+            {
+              event: "cycle-complete",
+              cycleId: cycle.id,
+              cycleType: cycle.type,
+              attempt,
+              turnCount: result.turnCount,
+            },
           );
 
           // If agent ran unconstrained (scope=[]), record what it created and lock it in
@@ -1350,7 +1641,12 @@ async function main() {
           // Scope guard: revert any files the agent touched outside its declared scope
           const unrevertable = checkAndRevertScopeViolations(cycle);
           if (unrevertable && unrevertable.length > 0) {
-            appendLog({ type: "harness", event: "scope-revert-unrecoverable", cycleId: cycle.id, files: unrevertable });
+            appendLog({
+              type: "harness",
+              event: "scope-revert-unrecoverable",
+              cycleId: cycle.id,
+              files: unrevertable,
+            });
             console.log(
               `\n  [SCOPE CLEANUP] ${unrevertable.length} file(s) could not be auto-reverted — injecting cleanup cycle for ${cycle.agent}:`,
             );
@@ -1358,7 +1654,9 @@ async function main() {
 
             const cleanupCycle = buildScopeCleanupCycle(cycle, unrevertable);
             const insertIdx = queue.cycles.findIndex(
-              (c) => c.status === "pending" && (c.type.startsWith("implement-") || c.type === "reconcile"),
+              (c) =>
+                c.status === "pending" &&
+                (c.type.startsWith("implement-") || c.type === "reconcile"),
             );
             queue.cycles.splice(
               insertIdx !== -1 ? insertIdx : queue.cycles.length,
@@ -1366,21 +1664,32 @@ async function main() {
               cleanupCycle,
             );
             writeQueue(queue);
-            console.log(`  Cleanup cycle "${cleanupCycle.id}" inserted at position ${insertIdx !== -1 ? insertIdx : "end"}`);
+            console.log(
+              `  Cleanup cycle "${cleanupCycle.id}" inserted at position ${insertIdx !== -1 ? insertIdx : "end"}`,
+            );
           }
 
           // After a deliver cycle: write human-readable markdown summary to output/
           if (cycle.type === "deliver") {
             const rawSummary = result.finalMessage ?? "";
-            const summary = rawSummary.replace(/\s*CYCLE_COMPLETE\s*$/, "").trim();
+            const summary = rawSummary
+              .replace(/\s*CYCLE_COMPLETE\s*$/, "")
+              .trim();
             if (summary) {
-              const deliverFile = join(OUTPUT_DIR, `delivery-${runTimestamp}.md`);
+              const deliverFile = join(
+                OUTPUT_DIR,
+                `delivery-${runTimestamp}.md`,
+              );
               const header = `# Delivery — ${runTimestamp}\n\n**Task:** ${userTask}\n\n---\n\n`;
               try {
                 writeFileSync(deliverFile, header + summary, "utf8");
-                console.log(`  [DELIVER] Summary written to output/delivery-${runTimestamp}.md`);
+                console.log(
+                  `  [DELIVER] Summary written to output/delivery-${runTimestamp}.md`,
+                );
               } catch (err) {
-                console.log(`  [WARN] Could not write delivery markdown: ${err.message}`);
+                console.log(
+                  `  [WARN] Could not write delivery markdown: ${err.message}`,
+                );
               }
             }
           }
@@ -1391,7 +1700,9 @@ async function main() {
               const surfaces = testReport.failedSurfaces?.length
                 ? testReport.failedSurfaces
                 : ["unknown"];
-              const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
+              const deliverIdx = queue.cycles.findIndex(
+                (c) => c.type === "deliver",
+              );
               const fixCycles = surfaces.map((surface) => ({
                 id: `fix-${surface}-attempt-${attempt}`,
                 type: "fix",
@@ -1405,13 +1716,18 @@ async function main() {
                 status: "pending",
                 outputFile: "test.json",
               };
-              const insertAt = deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
+              const insertAt =
+                deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
               queue.cycles.splice(insertAt, 0, ...fixCycles, retryTest);
               writeQueue(queue);
-              console.log(`  [FIX] Tests failed — injecting fix cycles for: ${surfaces.join(", ")}`);
+              console.log(
+                `  [FIX] Tests failed — injecting fix cycles for: ${surfaces.join(", ")}`,
+              );
             } else if (!testReport.passed) {
               // MAX_RETRIES exhausted — inject recovery cycle
-              const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
+              const deliverIdx = queue.cycles.findIndex(
+                (c) => c.type === "deliver",
+              );
               const recoveryCycle = {
                 id: "recovery",
                 type: "recovery",
@@ -1425,8 +1741,13 @@ async function main() {
                 recoveryCycle,
               );
               writeQueue(queue);
-              console.log(`  [RECOVERY] Tests failed after ${attempt} attempts — injecting recovery cycle`);
-              notify("Claude — Recovery Cycle", `${attempt} test attempts exhausted`);
+              console.log(
+                `  [RECOVERY] Tests failed after ${attempt} attempts — injecting recovery cycle`,
+              );
+              notify(
+                "Claude — Recovery Cycle",
+                `${attempt} test attempts exhausted`,
+              );
             }
           }
         }
@@ -1439,20 +1760,31 @@ async function main() {
         cycle.blockedReason = result.finalMessage.slice(0, 300);
         cycle.blockedAt = new Date().toISOString();
         writeQueue(queue);
-        appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
+        appendSessionCycle(
+          `[autonomous] ${cycle.id}`,
+          "blocked",
+          cycle.blockedReason,
+        );
         console.log(`\n[BLOCKED] ${cycle.id} needs human input.`);
         console.log(`  Reason: ${cycle.blockedReason.slice(0, 120)}`);
         console.log(`  To resume: cortex-harness resume "your answer"`);
-        notify("Claude — Needs Input", `${cycle.id} blocked | ${userTask.slice(0, 60)}`);
+        notify(
+          "Claude — Needs Input",
+          `${cycle.id} blocked | ${userTask.slice(0, 60)}`,
+        );
         shouldBreak = true;
 
-      // ── Partial ─────────────────────────────────────────────────────────────
-
+        // ── Partial ─────────────────────────────────────────────────────────────
       } else if (result.signal === "partial") {
         const reasonMatch = result.finalMessage.match(/CYCLE_PARTIAL:(.+)/);
         const reason = reasonMatch?.[1]?.trim() ?? "incomplete";
         const nextAttempt = attempt + 1;
-        const effectiveMaxRetries = getEffectiveMaxRetries(cycle, reason, result.signal, result.finalMessage);
+        const effectiveMaxRetries = getEffectiveMaxRetries(
+          cycle,
+          reason,
+          result.signal,
+          result.finalMessage,
+        );
 
         if (attempt < effectiveMaxRetries) {
           console.log(
@@ -1461,7 +1793,13 @@ async function main() {
           notify(
             "Claude — Cycle Retrying",
             `${cycle.id} | partial | retry ${nextAttempt}/${effectiveMaxRetries}`,
-            { event: "cycle-retrying", cycleId: cycle.id, cycleType: cycle.type, attempt, nextAttempt },
+            {
+              event: "cycle-retrying",
+              cycleId: cycle.id,
+              cycleType: cycle.type,
+              attempt,
+              nextAttempt,
+            },
           );
           // cycle stays pending — picked up in next outer loop iteration
         } else {
@@ -1480,28 +1818,41 @@ async function main() {
             console.log(
               `  [RATE-LIMIT → pending] ${cycle.id}: no output after ${attempt} attempts — kept pending for next run`,
             );
-            notify("Claude — Cycle Kept Pending", `${cycle.id} | rate-limit, no output after ${attempt} attempts`);
+            notify(
+              "Claude — Cycle Kept Pending",
+              `${cycle.id} | rate-limit, no output after ${attempt} attempts`,
+            );
           } else {
             cycle.status = "partial";
             cycle.partialReason = reason;
             writeQueue(queue);
             appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
-            console.log(`  [PARTIAL] ${cycle.id} incomplete after ${attempt} attempts: ${reason}`);
-            const remainingAfter = queue.cycles.filter((c) => c.status === "pending");
+            console.log(
+              `  [PARTIAL] ${cycle.id} incomplete after ${attempt} attempts: ${reason}`,
+            );
+            const remainingAfter = queue.cycles.filter(
+              (c) => c.status === "pending",
+            );
             if (remainingAfter.length) {
               console.log(
                 `  [WARN] ${cycle.id} is partial — run continues but downstream cycles may be affected. Run: cortex-harness resume to retry.`,
               );
             }
-            notify("Claude — Cycle Partial", `${cycle.id} | ${reason.slice(0, 80)}`);
+            notify(
+              "Claude — Cycle Partial",
+              `${cycle.id} | ${reason.slice(0, 80)}`,
+            );
           }
           // Partial doesn't stop the run — next cycle proceeds
         }
 
-      // ── Hung / error / failed ────────────────────────────────────────────────
-
+        // ── Hung / error / failed ────────────────────────────────────────────────
       } else if (result.signal !== "complete") {
-        const effectiveMaxRetriesErr = getEffectiveMaxRetries(cycle, result.finalMessage, result.signal);
+        const effectiveMaxRetriesErr = getEffectiveMaxRetries(
+          cycle,
+          result.finalMessage,
+          result.signal,
+        );
         if (attempt < effectiveMaxRetriesErr) {
           console.log(
             `  [${result.signal.toUpperCase()} → retry ${attempt + 1}/${effectiveMaxRetriesErr}] ${cycle.id}`,
@@ -1509,15 +1860,27 @@ async function main() {
           notify(
             "Claude — Cycle Retrying",
             `${cycle.id} | ${result.signal} | retry ${attempt + 1}/${effectiveMaxRetriesErr}`,
-            { event: "cycle-retrying", cycleId: cycle.id, cycleType: cycle.type, attempt, nextAttempt: attempt + 1 },
+            {
+              event: "cycle-retrying",
+              cycleId: cycle.id,
+              cycleType: cycle.type,
+              attempt,
+              nextAttempt: attempt + 1,
+            },
           );
           // cycle stays pending
         } else {
           cycle.status = "blocked";
           cycle.blockedReason = `${result.signal} after ${attempt} attempts`;
           writeQueue(queue);
-          appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
-          console.log(`\n[BLOCKED] ${cycle.id} ${result.signal} — ${attempt} attempts exhausted.`);
+          appendSessionCycle(
+            `[autonomous] ${cycle.id}`,
+            "blocked",
+            cycle.blockedReason,
+          );
+          console.log(
+            `\n[BLOCKED] ${cycle.id} ${result.signal} — ${attempt} attempts exhausted.`,
+          );
           notify("Claude — Cycle Failed", `${cycle.id} | ${result.signal}`);
           shouldBreak = true;
         }
@@ -1530,10 +1893,14 @@ async function main() {
   // ── Summary ───────────────────────────────────────────────────────────────────
 
   const finalQueue = readQueue();
-  const done    = finalQueue?.cycles.filter((c) => c.status === "done").length ?? 0;
-  const blocked = finalQueue?.cycles.filter((c) => c.status === "blocked").length ?? 0;
-  const partial = finalQueue?.cycles.filter((c) => c.status === "partial").length ?? 0;
-  const pending = finalQueue?.cycles.filter((c) => c.status === "pending").length ?? 0;
+  const done =
+    finalQueue?.cycles.filter((c) => c.status === "done").length ?? 0;
+  const blocked =
+    finalQueue?.cycles.filter((c) => c.status === "blocked").length ?? 0;
+  const partial =
+    finalQueue?.cycles.filter((c) => c.status === "partial").length ?? 0;
+  const pending =
+    finalQueue?.cycles.filter((c) => c.status === "pending").length ?? 0;
   const elapsed = Math.round((Date.now() - runStart) / 1000);
   const duration =
     elapsed >= 3600
@@ -1556,7 +1923,10 @@ async function main() {
   appendLog({
     type: "harness",
     event: "run-end",
-    done, blocked, partial, pending,
+    done,
+    blocked,
+    partial,
+    pending,
     totalSpentUsd,
     duration,
   });
