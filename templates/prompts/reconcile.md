@@ -26,12 +26,34 @@ Perform reconciliation steps in order:
 3. Consistency check — queue producers/consumers, API request/response shapes, validation schemas.
    On failure: re-delegate misaligned side.
 
+4. Additional group detection — only when {{CYCLE_ID}} is "reconcile-cross-group":
+   Review ALL implement reports from all groups together and ask: was each group's workflow type correct?
+   Signs of a wrong workflow (these cannot be fixed by re-delegation — they need new cycles):
+   - fix-bug group: implement agent found no actual bug — the behavior was intentional → implement-feature needed
+   - fix-bug group: the root cause requires building something that doesn't exist → implement-feature needed first
+   - implement-feature group: discovered broken existing behavior it had to work around → fix-bug needed first
+   - edit-feature group: the feature being "edited" doesn't exist yet → implement-feature needed instead
+   For each genuine mismatch, add one entry to requiresAdditionalGroups[]:
+   {
+     "reason": "<what was wrong and why existing cycles cannot cover it>",
+     "subTask": "<the specific work needed — concise, max 15 words>",
+     "suggestedPromptType": "<implement-feature | fix-bug | edit-feature>",
+     "suggestedAgents": ["<agent-name>", ...],
+     "group": "<3-word kebab slug: verb-noun, e.g. add-timeout-handler>"
+   }
+   Only add entries for work that is genuinely unresolved after steps 1–3.
+   Do NOT add entries for gaps already closed by re-delegation in step 2.
+   For all other reconcile cycles (non-cross-group): omit requiresAdditionalGroups entirely.
+
 Write reconcile report to: {{CYCLE_STATE_DIR}}/{{OUTPUT_FILE}}
 {
   "contractsAligned": true | false,
   "redelegationLog": [{ "gap": "", "agent": "", "spawned": true, "result": "" }],
   "consistencyPassed": true | false,
-  "residualRisks": []
+  "residualRisks": [],
+  "requiresAdditionalGroups": []
 }
+
+requiresAdditionalGroups is only written by reconcile-cross-group. All other reconcile cycles omit it or write [].
 
 Task context: {{USER_TASK}}

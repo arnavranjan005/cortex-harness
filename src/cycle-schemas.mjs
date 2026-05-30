@@ -38,6 +38,14 @@ export const ImplementReport = z.object({
   notes: z.string().optional(),
 });
 
+export const AdditionalGroupEntry = z.object({
+  reason: z.string(),
+  subTask: z.string(),
+  suggestedPromptType: z.enum(['implement-feature', 'fix-bug', 'edit-feature', 'create-app']),
+  suggestedAgents: z.array(z.string()).optional(),
+  group: z.string(),
+});
+
 export const ReconcileReport = z.object({
   contractsAligned: z.boolean(),
   redelegationLog: z.array(
@@ -50,6 +58,7 @@ export const ReconcileReport = z.object({
   ),
   consistencyPassed: z.boolean(),
   residualRisks: z.array(z.union([z.string(), z.object({}).passthrough()])),
+  requiresAdditionalGroups: z.array(AdditionalGroupEntry).optional(),
 });
 
 const TargetEntry = z.union([
@@ -137,25 +146,34 @@ export const CycleEntry = z.object({
   partialReason: z.string().optional(),
   completedAt: z.string().optional(),
   turns: z.number().optional(),
+  taskGroup: z.string().nullable().optional(),
+  subTask: z.string().optional(),
+});
+
+export const IntentEntry = z.object({
+  subTask: z.string(),
+  promptType: z.enum(['implement-feature', 'fix-bug', 'edit-feature', 'create-app']),
+  group: z.string(),
 });
 
 export const TaskQueue = z.object({
   task: z.string(),
-  promptType: z.enum(['implement-feature', 'fix-bug', 'edit-feature', 'create-app']),
+  promptType: z.enum(['implement-feature', 'fix-bug', 'edit-feature', 'create-app', 'multi-intent']),
+  intents: z.array(IntentEntry).optional(),
   cycles: z.array(CycleEntry),
 });
 
 // ── Schema registry — maps outputFile name patterns to schemas ────────────────
 
 const SCHEMA_REGISTRY = [
-  { pattern: /^skills\.json$/,     schema: SkillsReport,    name: 'SkillsReport'    },
-  { pattern: /^explore\.json$/,    schema: ExploreReport,   name: 'ExploreReport'   },
-  { pattern: /^plan\.json$/,       schema: PlanReport,      name: 'PlanReport'      },
-  { pattern: /^reproduce\.json$/,  schema: ReproduceReport, name: 'ReproduceReport' },
-  { pattern: /^implement-.+\.json$/,schema: ImplementReport,name: 'ImplementReport' },
-  { pattern: /^reconcile\.json$/,  schema: ReconcileReport, name: 'ReconcileReport' },
-  { pattern: /^test\.json$/,       schema: TestReport,      name: 'TestReport'      },
-  { pattern: /^fix-.+\.json$/,     schema: FixReport,       name: 'FixReport'       },
+  { pattern: /^skills\.json$/,              schema: SkillsReport,    name: 'SkillsReport'    },
+  { pattern: /^explore(-[^.]+)?\.json$/,    schema: ExploreReport,   name: 'ExploreReport'   },
+  { pattern: /^plan(-[^.]+)?\.json$/,       schema: PlanReport,      name: 'PlanReport'      },
+  { pattern: /^reproduce(-[^.]+)?\.json$/,  schema: ReproduceReport, name: 'ReproduceReport' },
+  { pattern: /^implement-.+\.json$/,        schema: ImplementReport, name: 'ImplementReport' },
+  { pattern: /^reconcile(-[^.]+)?\.json$/,  schema: ReconcileReport, name: 'ReconcileReport' },
+  { pattern: /^test(-[^.]+)?\.json$/,       schema: TestReport,      name: 'TestReport'      },
+  { pattern: /^fix-.+\.json$/,              schema: FixReport,       name: 'FixReport'       },
 ];
 
 /**

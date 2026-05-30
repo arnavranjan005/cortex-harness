@@ -3,6 +3,7 @@
  * Configuration-driven: reads harness.config.json for paths, agent scopes, and commands.
  */
 
+import chalk from "chalk";
 import { spawn, execSync } from "child_process";
 import {
   writeFileSync,
@@ -139,7 +140,7 @@ function checkAndRevertScopeViolations(cycle) {
   if (!violations.length) return;
 
   console.log(
-    `\n  [SCOPE] ${cycle.id} touched ${violations.length} out-of-scope file(s) — reverting:`,
+    `\n  ${chalk.red("[SCOPE]")} ${chalk.cyan(cycle.id)} touched ${violations.length} out-of-scope file(s) — reverting:`,
   );
   const reverted = [];
   const failed = [];
@@ -189,10 +190,10 @@ function checkAndRevertScopeViolations(cycle) {
     }
 
     if (done) {
-      console.log(`    ✗ reverted: ${f}`);
+      console.log(`    ${chalk.green("✗")} reverted: ${chalk.dim(f)}`);
       reverted.push(f);
     } else {
-      console.log(`    ! could not revert: ${f}`);
+      console.log(`    ${chalk.red("!")} could not revert: ${chalk.red(f)}`);
       failed.push(f);
     }
   }
@@ -323,10 +324,10 @@ function autoUpdateScope(cycle) {
   try {
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
     console.log(
-      `\n  [SCOPE] Auto-updated scopes from unconstrained cycle "${cycle.id}":`,
+      `\n  ${chalk.yellow("[SCOPE]")} Auto-updated scopes from unconstrained cycle ${chalk.cyan(cycle.id)}:`,
     );
     for (const [agent, paths] of Object.entries(updates)) {
-      paths.forEach((p) => console.log(`    + ${p}  →  ${agent}`));
+      paths.forEach((p) => console.log(`    ${chalk.green("+")} ${p}  →  ${chalk.dim(agent)}`));
     }
     appendLog({
       type: "harness",
@@ -358,6 +359,122 @@ function buildScopeCleanupCycle(cycle, failedFiles) {
   };
 }
 
+// ── Additional group injection ─────────────────────────────────────────────────
+// When reconcile-cross-group detects that a group used the wrong workflow type,
+// it emits requiresAdditionalGroups[]. The runner builds and inserts full cycle groups
+// before deliver so the correct workflow runs before the final summary.
+
+function buildAdditionalGroupCycles(group, subTask, promptType, agents) {
+  const cycles = [];
+
+  // fix-bug: reproduce before explore
+  if (promptType === "fix-bug") {
+    cycles.push({
+      id: `reproduce-${group}`,
+      type: "reproduce",
+      taskGroup: group,
+      subTask,
+      status: "pending",
+      outputFile: `reproduce-${group}.json`,
+      parallel: false,
+      notes: `Reproduce step for additional group: ${subTask}`,
+    });
+  }
+
+  // explore always runs before implement
+  cycles.push({
+    id: `explore-${group}`,
+    type: "explore",
+    taskGroup: group,
+    subTask,
+    status: "pending",
+    outputFile: `explore-${group}.json`,
+    parallel: false,
+    notes: `Explore for additional group: ${subTask}`,
+  });
+
+  // implement cycles — parallel when multiple agents, sequential when one
+  const canParallel = agents.length > 1;
+  for (const agent of agents) {
+    const surface = agent.replace(/-subagent$/, "");
+    cycles.push({
+      id: `implement-${surface}-${group}`,
+      type: `implement-${surface}`,
+      agent,
+      taskGroup: group,
+      subTask,
+      status: "pending",
+      outputFile: `implement-${surface}-${group}.json`,
+      parallel: canParallel,
+      notes: `Implementation for additional group: ${subTask}`,
+    });
+  }
+
+  cycles.push({
+    id: `reconcile-${group}`,
+    type: "reconcile",
+    taskGroup: group,
+    subTask,
+    status: "pending",
+    outputFile: `reconcile-${group}.json`,
+    parallel: false,
+    notes: `Reconcile for additional group: ${subTask}`,
+  });
+
+  cycles.push({
+    id: `test-${group}`,
+    type: "test",
+    taskGroup: group,
+    subTask,
+    status: "pending",
+    outputFile: `test-${group}.json`,
+    parallel: false,
+    notes: `Test for additional group: ${subTask}`,
+  });
+
+  return cycles;
+}
+
+function injectAdditionalGroups(report, queue) {
+  const additional = report?.requiresAdditionalGroups;
+  if (!Array.isArray(additional) || additional.length === 0) return false;
+
+  const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
+  const insertAt = deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
+
+  let offset = 0;
+  for (const entry of additional) {
+    const { reason, subTask, suggestedPromptType, suggestedAgents = [], group } =
+      entry;
+    if (!group || !subTask) {
+      console.log(
+        `  ${chalk.yellow("[RE-PLAN]")} Skipping malformed requiresAdditionalGroups entry (missing group or subTask)`,
+      );
+      continue;
+    }
+
+    const newCycles = buildAdditionalGroupCycles(
+      group,
+      subTask,
+      suggestedPromptType ?? "implement-feature",
+      suggestedAgents,
+    );
+    queue.cycles.splice(insertAt + offset, 0, ...newCycles);
+    offset += newCycles.length;
+    console.log(
+      `\n  ${chalk.magenta("[RE-PLAN]")} Injecting ${chalk.bold(newCycles.length)} cycles for additional group ${chalk.cyan(`"${group}"`)}: ${subTask}`,
+    );
+    if (reason) console.log(`    ${chalk.dim("Reason:")} ${reason}`);
+  }
+
+  if (offset > 0) {
+    writeQueue(queue);
+    printPendingQueue(queue);
+    return true;
+  }
+  return false;
+}
+
 // ── Task input ────────────────────────────────────────────────────────────────
 
 const cliTask = process.argv.slice(2).join(" ").trim();
@@ -369,7 +486,7 @@ if (!userTask) {
     const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
     if (existingQueue?.task) {
       userTask = existingQueue.task;
-      console.log(`[resume] Using task from task-queue.json: ${userTask}`);
+      console.log(`${chalk.dim("[resume]")} Using task from task-queue.json: ${userTask}`);
     }
   } catch {
     /* no queue yet */
@@ -380,7 +497,7 @@ if (!userTask) {
     const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
     if (existingQueue?.task && existingQueue.task !== cliTask) {
       console.log(
-        `[new-task] Task differs from task-queue.json — clearing old state for fresh run.`,
+        `${chalk.dim("[new-task]")} Task differs from task-queue.json — clearing old state for fresh run.`,
       );
       unlinkSync(QUEUE_FILE);
       if (existsSync(CYCLE_DIR)) {
@@ -504,6 +621,15 @@ function readQueue() {
 
 function writeQueue(queue) {
   writeFileSync(QUEUE_FILE, JSON.stringify(queue, null, 2), "utf8");
+}
+
+function printPendingQueue(queue) {
+  const pending = queue.cycles.filter((c) => c.status === "pending");
+  if (!pending.length) return;
+  console.log(`  ${chalk.dim(`Queue updated — ${pending.length} pending:`)}`);
+  pending.forEach((c) =>
+    console.log(`    ${chalk.dim("·")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`),
+  );
 }
 
 function nextPendingCycle(queue) {
@@ -754,12 +880,20 @@ Current cycle: ${cycle.id}`;
   // ── PRIOR CONTEXT ─────────────────────────────────────────────────────────
   const priorContext = () => {
     const parts = [];
+    const g = cycle.taskGroup;
+    const suffix = g ? `-${g}` : "";
+
     const skills = readCycleState("skills.json");
     const answers = readCycleState("human-answers.json");
     const scopeViol = readCycleState("scope-violations.json");
-    const explore = readCycleState("explore.json");
-    const plan = readCycleState("plan.json");
-    const reconcile = readCycleState("reconcile.json");
+    // Group-specific first; fall back to shared explore/plan (written when shared explore is used)
+    const explore =
+      (suffix ? readCycleState(`explore${suffix}.json`) : null) ??
+      readCycleState("explore.json");
+    const plan =
+      (suffix ? readCycleState(`plan${suffix}.json`) : null) ??
+      readCycleState("plan.json");
+
     if (skills) parts.push(`## Skill guidance\n\`\`\`json\n${skills}\n\`\`\``);
     if (answers)
       parts.push(
@@ -774,6 +908,8 @@ Current cycle: ${cycle.id}`;
     if (explore)
       parts.push(`## Explorer report\n\`\`\`json\n${explore}\n\`\`\``);
     if (plan) parts.push(`## Planner report\n\`\`\`json\n${plan}\n\`\`\``);
+
+    // ALL completed implement reports — cross-group visibility so later groups see what prior groups changed
     const queue = readQueue();
     if (queue) {
       for (const c of queue.cycles) {
@@ -789,9 +925,18 @@ Current cycle: ${cycle.id}`;
             );
         }
       }
+      // Reconcile reports: all completed reconcile cycles (handles single-intent, per-group, and cross-group)
+      for (const c of queue.cycles) {
+        if (c.type === "reconcile" && c.status === "done" && c.outputFile) {
+          const rec = readCycleState(c.outputFile);
+          if (rec)
+            parts.push(
+              `## Reconcile report (${c.id})\n\`\`\`json\n${rec}\n\`\`\``,
+            );
+        }
+      }
     }
-    if (reconcile)
-      parts.push(`## Reconcile report\n\`\`\`json\n${reconcile}\n\`\`\``);
+
     return parts.length ? "\n\n" + parts.join("\n\n") : "";
   };
 
@@ -805,18 +950,23 @@ Current cycle: ${cycle.id}`;
 
   // ── CYCLE OUTPUTS (for deliver) ───────────────────────────────────────────
   const assembleCycleOutputs = () => {
-    const stateFiles = [
-      "explore.json",
-      "plan.json",
-      "implement-backend.json",
-      "implement-frontend.json",
-      "implement-distributed.json",
-      "implement-infra.json",
-      "reconcile.json",
-      "test.json",
-    ];
+    // Scan all cycle-state/ files so multi-intent group-suffixed files are included automatically
+    let files;
+    try {
+      files = readdirSync(CYCLE_DIR)
+        .filter(
+          (f) =>
+            f.endsWith(".json") &&
+            f !== "skills.json" &&
+            f !== "human-answers.json" &&
+            f !== "scope-violations.json",
+        )
+        .sort();
+    } catch {
+      files = [];
+    }
     const parts = [];
-    for (const f of stateFiles) {
+    for (const f of files) {
       const content = readCycleState(f);
       if (content) parts.push(`### ${f}\n\`\`\`json\n${content}\n\`\`\``);
     }
@@ -827,12 +977,15 @@ Current cycle: ${cycle.id}`;
   const assembleImplReports = () => {
     const queue = readQueue();
     if (!queue) return "";
+    const g = cycle.taskGroup;
     const parts = [];
     for (const c of queue.cycles) {
-      if (c.type.startsWith("implement-") && c.outputFile) {
-        const report = readCycleState(c.outputFile);
-        if (report) parts.push(`### ${c.id}\n\`\`\`json\n${report}\n\`\`\``);
-      }
+      if (!c.type.startsWith("implement-") || !c.outputFile) continue;
+      // Per-group reconcile: only include that group's impl reports
+      // Cross-group reconcile (g=null) and single-intent (g=null): include all
+      if (g && c.taskGroup !== g) continue;
+      const report = readCycleState(c.outputFile);
+      if (report) parts.push(`### ${c.id}\n\`\`\`json\n${report}\n\`\`\``);
     }
     return parts.length ? "\n\n## Agent reports\n\n" + parts.join("\n\n") : "";
   };
@@ -950,7 +1103,7 @@ async function runCycle(cycle, remainingBudgetUsd) {
           turnCount: realTurnCount || liveTurnCount || turnCount,
         });
         console.log(
-          `  [RATE LIMIT] ${cycle.id} hit rate limit after ${realTurnCount || liveTurnCount || turnCount} turns — treating as partial`,
+          `  ${chalk.yellow("[RATE LIMIT]")} ${chalk.cyan(cycle.id)} hit rate limit after ${realTurnCount || liveTurnCount || turnCount} turns — treating as partial`,
         );
         return "partial";
       }
@@ -968,7 +1121,7 @@ async function runCycle(cycle, remainingBudgetUsd) {
           turnCount: realTurnCount || liveTurnCount || turnCount,
         });
         console.log(
-          `\n[HUNG] Cycle ${cycle.id} silent for 20 min after ${realTurnCount || liveTurnCount || turnCount} turns`,
+          `\n${chalk.red("[HUNG]")} Cycle ${chalk.cyan(cycle.id)} silent for 20 min after ${realTurnCount || liveTurnCount || turnCount} turns`,
         );
         notify(
           "Claude — Cycle Hung",
@@ -1097,18 +1250,18 @@ async function runCycle(cycle, remainingBudgetUsd) {
                     cap,
                   });
                   console.log(
-                    `\n  [TURN CAP] ${cycle.id} hit ${cap}-turn limit — stopping`,
+                    `\n  ${chalk.yellow("[TURN CAP]")} ${chalk.cyan(cycle.id)} hit ${cap}-turn limit — stopping`,
                   );
 
                   if (cycle.outputFile) {
-                    console.log(`  [SUMMARY] Requesting progress summary...`);
+                    console.log(`  ${chalk.dim("[SUMMARY]")} Requesting progress summary...`);
                     killProc(proc);
                     const summary = await requestTurnCapSummary(
                       cycle.id,
                       assistantLog,
                     );
                     console.log(
-                      `  [SUMMARY] ${summary.slice(0, 120)}${summary.length > 120 ? "…" : ""}`,
+                      `  ${chalk.dim("[SUMMARY]")} ${summary.slice(0, 120)}${summary.length > 120 ? "…" : ""}`,
                     );
 
                     // Accumulate history across retries so each attempt sees what prior ones did
@@ -1342,11 +1495,11 @@ async function main() {
   const runStart = Date.now();
 
   console.log("");
-  console.log("━━━ Autonomous Multi-Cycle Run ━━━━━━━━━━━━━━━━━━");
-  console.log(`Task   : ${userTask}`);
-  console.log(`Budget : $${MAX_BUDGET_USD} total`);
-  console.log(`Log    : ${runLogFile}`);
-  console.log("─────────────────────────────────────────────────");
+  console.log(chalk.bold.blue("━━━ Autonomous Multi-Cycle Run ━━━━━━━━━━━━━━━━━━"));
+  console.log(`${chalk.dim("Task   :")} ${userTask}`);
+  console.log(`${chalk.dim("Budget :")} $${MAX_BUDGET_USD} total`);
+  console.log(`${chalk.dim("Log    :")} ${runLogFile}`);
+  console.log(chalk.dim("─────────────────────────────────────────────────"));
 
   appendLog({
     type: "harness",
@@ -1363,7 +1516,7 @@ async function main() {
   let queue = readQueue();
 
   if (!queue) {
-    console.log("\n[orchestrate] Planning cycles...");
+    console.log(`\n${chalk.bold("[orchestrate]")} Planning cycles...`);
     process.stdout.write("Progress : ");
 
     const orchCycle = {
@@ -1400,9 +1553,9 @@ async function main() {
         "NEEDS_HUMAN_INPUT during planning",
       );
       console.log(
-        "\n[BLOCKED] Orchestration needs human input. Run summary written to session.json.",
+        `\n${chalk.red.bold("[BLOCKED]")} Orchestration needs human input. Run summary written to session.json.`,
       );
-      console.log('  To provide input: cortex-harness resume "your answer"');
+      console.log(chalk.dim('  To provide input: cortex-harness resume "your answer"'));
       notify(
         "Claude — Needs Input",
         `Orchestration blocked | ${userTask.slice(0, 60)}`,
@@ -1418,7 +1571,7 @@ async function main() {
     queue = readQueue();
     if (!queue) {
       console.log(
-        "\n[ERROR] Orchestrator did not write task-queue.json. Aborting.",
+        `\n${chalk.red("[ERROR]")} Orchestrator did not write task-queue.json. Aborting.`,
       );
       notify(
         "Claude — Run Failed",
@@ -1430,8 +1583,8 @@ async function main() {
     // Validate task-queue.json schema
     const queueValidation = validateTaskQueue(queue);
     if (!queueValidation.valid) {
-      console.log("\n[WARN] task-queue.json schema issues:");
-      queueValidation.errors.forEach((e) => console.log(`  - ${e}`));
+      console.log(`\n${chalk.yellow("[WARN]")} task-queue.json schema issues:`);
+      queueValidation.errors.forEach((e) => console.log(`  ${chalk.dim("-")} ${e}`));
       appendLog({
         type: "validation-warning",
         file: "task-queue.json",
@@ -1441,9 +1594,11 @@ async function main() {
     }
   }
 
-  console.log(`\nQueue: ${queue.cycles.length} cycles`);
+  console.log(`\n${chalk.bold(`Queue: ${queue.cycles.length} cycles`)}`);
   queue.cycles.forEach((c) =>
-    console.log(`  [${c.status === "done" ? "✓" : " "}] ${c.id} (${c.type})`),
+    console.log(
+      `  ${c.status === "done" ? chalk.green("[✓]") : chalk.dim("[ ]")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`,
+    ),
   );
   console.log("");
 
@@ -1455,7 +1610,7 @@ async function main() {
     const remaining = MAX_BUDGET_USD - totalSpentUsd;
     if (remaining <= 0.1) {
       console.log(
-        `\n[BUDGET] $${MAX_BUDGET_USD} exhausted ($${totalSpentUsd.toFixed(2)} spent). Stopping.`,
+        `\n${chalk.red("[BUDGET]")} $${MAX_BUDGET_USD} exhausted (${chalk.red(`$${totalSpentUsd.toFixed(2)}`)} spent). Stopping.`,
       );
       notify("Claude — Budget Exhausted", `$${totalSpentUsd.toFixed(2)} spent`);
       break;
@@ -1463,13 +1618,13 @@ async function main() {
 
     const batch = nextCycleBatch(queue);
     if (!batch) {
-      console.log("\n[DONE] All cycles complete.");
+      console.log(`\n${chalk.green.bold("[DONE]")} All cycles complete.`);
       const skippedPartials = queue.cycles.filter(
         (c) => c.status === "partial",
       );
       if (skippedPartials.length) {
         console.log(
-          `\n[WARN] ${skippedPartials.length} cycle(s) marked partial during this run:`,
+          `\n${chalk.yellow("[WARN]")} ${skippedPartials.length} cycle(s) marked partial during this run:`,
         );
         for (const c of skippedPartials) {
           const outputWritten = cycleOutputWritten(c);
@@ -1481,10 +1636,10 @@ async function main() {
             ? `output saved (${outputLabel}) — resume to continue`
             : "no output written — did not start";
           console.log(
-            `  • ${c.id} (${c.type}) — reason: ${c.partialReason ?? "unknown"} — ${statusNote}`,
+            `  ${chalk.yellow("•")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)} — reason: ${c.partialReason ?? "unknown"} — ${chalk.dim(statusNote)}`,
           );
         }
-        console.log("\n  To retry: cortex-harness resume");
+        console.log(`\n  ${chalk.dim("To retry: cortex-harness resume")}`);
         notify(
           "Claude — Partial Cycles Skipped",
           `${skippedPartials.length} partial: ${skippedPartials.map((c) => c.id).join(", ")}`,
@@ -1501,14 +1656,14 @@ async function main() {
     if (batch.length === 1) {
       const attempt = (retryCount[batch[0].id] ?? 0) + 1;
       console.log(
-        `\n[cycle${attempt > 1 ? ` retry ${attempt}` : ""}] ${batch[0].id} (${batch[0].type})`,
+        `\n${chalk.bold(`[cycle${attempt > 1 ? ` retry ${attempt}` : ""}]`)} ${chalk.cyan(batch[0].id)} ${chalk.dim(`(${batch[0].type})`)}`,
       );
     } else {
       console.log(
-        `\n[parallel ×${batch.length}] ${batch.map((c) => c.id).join(" + ")}`,
+        `\n${chalk.bold(`[parallel ×${batch.length}]`)} ${batch.map((c) => chalk.cyan(c.id)).join(chalk.dim(" + "))}`,
       );
     }
-    process.stdout.write("Progress : ");
+    process.stdout.write(chalk.dim("Progress : "));
 
     if (batch.length === 1) {
       const attempt = (retryCount[batch[0].id] ?? 0) + 1;
@@ -1550,12 +1705,12 @@ async function main() {
 
         if (cycle.outputFile) {
           const rawJson = readCycleState(cycle.outputFile);
-          const isCritical = CRITICAL_OUTPUT_FILES.has(cycle.outputFile);
+          const isCritical = CRITICAL_OUTPUT_FILES.has(cycle.outputFile) || cycle.type === "test";
 
           if (!rawJson) {
             if (isCritical) {
               console.log(
-                `  [WARN] ${cycle.id} reported complete but ${cycle.outputFile} not written — treating as partial`,
+                `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} reported complete but ${cycle.outputFile} not written — treating as partial`,
               );
               result.signal = "partial";
               result.finalMessage = `CYCLE_PARTIAL:output file ${cycle.outputFile} not written`;
@@ -1567,7 +1722,7 @@ async function main() {
             } catch {
               if (isCritical) {
                 console.log(
-                  `  [ERROR] ${cycle.id} wrote unparseable JSON to ${cycle.outputFile} — treating as failed`,
+                  `  ${chalk.red("[ERROR]")} ${chalk.cyan(cycle.id)} wrote unparseable JSON to ${cycle.outputFile} — treating as failed`,
                 );
                 appendLog({
                   type: "validation-error",
@@ -1578,7 +1733,7 @@ async function main() {
                 result.signal = "failed";
               } else {
                 console.log(
-                  `  [WARN] ${cycle.id} wrote invalid JSON to ${cycle.outputFile} — continuing with no context`,
+                  `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} wrote invalid JSON to ${cycle.outputFile} — continuing with no context`,
                 );
               }
               parsed = null;
@@ -1588,9 +1743,9 @@ async function main() {
               const validation = validateCycleOutput(cycle.outputFile, parsed);
               if (!validation.valid && !validation.skipped) {
                 console.log(
-                  `  [WARN] ${cycle.id} schema mismatch (${validation.schemaName}):`,
+                  `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} schema mismatch (${validation.schemaName}):`,
                 );
-                validation.errors.forEach((e) => console.log(`    - ${e}`));
+                validation.errors.forEach((e) => console.log(`    ${chalk.dim("-")} ${e}`));
                 appendLog({
                   type: "validation-warning",
                   cycleId: cycle.id,
@@ -1598,10 +1753,11 @@ async function main() {
                 });
                 if (isCritical) {
                   const defaults =
-                    CONSERVATIVE_DEFAULTS[cycle.outputFile] ?? {};
+                    CONSERVATIVE_DEFAULTS[cycle.outputFile] ??
+                    (cycle.type === "test" ? CONSERVATIVE_DEFAULTS["test.json"] : {});
                   testReport = { ...defaults, ...parsed };
                   console.log(
-                    `  [INFO] Using conservative defaults for missing critical fields in ${cycle.outputFile}`,
+                    `  ${chalk.dim("[INFO]")} Using conservative defaults for missing critical fields in ${cycle.outputFile}`,
                   );
                 }
               } else if (parsed !== null) {
@@ -1620,8 +1776,8 @@ async function main() {
           appendSessionCycle(`[autonomous] ${cycle.id}`, "done");
 
           if (batch.length === 1)
-            console.log(`  [OK] ${result.turnCount} turns`);
-          else console.log(`  [OK] ${cycle.id} — ${result.turnCount} turns`);
+            console.log(`  ${chalk.green("[OK]")} ${chalk.dim(`${result.turnCount} turns`)}`);
+          else console.log(`  ${chalk.green("[OK]")} ${chalk.cyan(cycle.id)} ${chalk.dim(`— ${result.turnCount} turns`)}`);
 
           notify(
             "Claude — Cycle Complete",
@@ -1648,9 +1804,9 @@ async function main() {
               files: unrevertable,
             });
             console.log(
-              `\n  [SCOPE CLEANUP] ${unrevertable.length} file(s) could not be auto-reverted — injecting cleanup cycle for ${cycle.agent}:`,
+              `\n  ${chalk.red("[SCOPE CLEANUP]")} ${unrevertable.length} file(s) could not be auto-reverted — injecting cleanup cycle for ${chalk.cyan(cycle.agent)}:`,
             );
-            unrevertable.forEach((f) => console.log(`    - ${f}`));
+            unrevertable.forEach((f) => console.log(`    ${chalk.dim("-")} ${chalk.red(f)}`))
 
             const cleanupCycle = buildScopeCleanupCycle(cycle, unrevertable);
             const insertIdx = queue.cycles.findIndex(
@@ -1665,8 +1821,9 @@ async function main() {
             );
             writeQueue(queue);
             console.log(
-              `  Cleanup cycle "${cleanupCycle.id}" inserted at position ${insertIdx !== -1 ? insertIdx : "end"}`,
+              `  ${chalk.dim(`Cleanup cycle "${cleanupCycle.id}" inserted at position ${insertIdx !== -1 ? insertIdx : "end"}`)}`,
             );
+            printPendingQueue(queue);
           }
 
           // After a deliver cycle: write human-readable markdown summary to output/
@@ -1684,18 +1841,44 @@ async function main() {
               try {
                 writeFileSync(deliverFile, header + summary, "utf8");
                 console.log(
-                  `  [DELIVER] Summary written to output/delivery-${runTimestamp}.md`,
+                  `  ${chalk.green("[DELIVER]")} Summary written to ${chalk.dim(`output/delivery-${runTimestamp}.md`)}`,
                 );
               } catch (err) {
                 console.log(
-                  `  [WARN] Could not write delivery markdown: ${err.message}`,
+                  `  ${chalk.yellow("[WARN]")} Could not write delivery markdown: ${err.message}`,
                 );
+              }
+            }
+          }
+
+          // After reconcile-cross-group: check for additional groups needed
+          if (cycle.id === "reconcile-cross-group" && cycle.outputFile) {
+            const rcgRaw = readCycleState(cycle.outputFile);
+            if (rcgRaw) {
+              try {
+                const rcgReport = JSON.parse(rcgRaw);
+                const injected = injectAdditionalGroups(rcgReport, queue);
+                if (injected) {
+                  appendLog({
+                    type: "harness",
+                    event: "additional-groups-injected",
+                    cycleId: cycle.id,
+                  });
+                  notify(
+                    "Claude — Additional Groups Injected",
+                    `New work discovered in cross-group reconcile — queue extended`,
+                  );
+                }
+              } catch {
+                /* invalid JSON — skip, reconcile output is non-critical */
               }
             }
           }
 
           // After a test cycle: inject fix cycles or recovery cycle on failure
           if (cycle.type === "test" && testReport !== null) {
+            const fg = cycle.taskGroup;
+            const fgSuffix = fg ? `-${fg}` : "";
             if (!testReport.passed && attempt <= MAX_RETRIES) {
               const surfaces = testReport.failedSurfaces?.length
                 ? testReport.failedSurfaces
@@ -1704,35 +1887,41 @@ async function main() {
                 (c) => c.type === "deliver",
               );
               const fixCycles = surfaces.map((surface) => ({
-                id: `fix-${surface}-attempt-${attempt}`,
+                id: `fix-${surface}-attempt-${attempt}${fgSuffix}`,
                 type: "fix",
                 target: surface,
+                ...(fg ? { taskGroup: fg } : {}),
+                ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
                 status: "pending",
-                outputFile: `fix-${surface}-attempt-${attempt}.json`,
+                outputFile: `fix-${surface}-attempt-${attempt}${fgSuffix}.json`,
               }));
               const retryTest = {
-                id: `test-retry-${attempt}`,
+                id: `test-retry-${attempt}${fgSuffix}`,
                 type: "test",
+                ...(fg ? { taskGroup: fg } : {}),
+                ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
                 status: "pending",
-                outputFile: "test.json",
+                outputFile: `test${fgSuffix}.json`,
               };
               const insertAt =
                 deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
               queue.cycles.splice(insertAt, 0, ...fixCycles, retryTest);
               writeQueue(queue);
               console.log(
-                `  [FIX] Tests failed — injecting fix cycles for: ${surfaces.join(", ")}`,
+                `  ${chalk.yellow("[FIX]")} Tests failed — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
               );
+              printPendingQueue(queue);
             } else if (!testReport.passed) {
               // MAX_RETRIES exhausted — inject recovery cycle
               const deliverIdx = queue.cycles.findIndex(
                 (c) => c.type === "deliver",
               );
               const recoveryCycle = {
-                id: "recovery",
+                id: `recovery${fgSuffix}`,
                 type: "recovery",
+                ...(fg ? { taskGroup: fg } : {}),
                 status: "pending",
-                outputFile: "recovery.json",
+                outputFile: `recovery${fgSuffix}.json`,
                 notes: `Injected after test failed ${attempt} times`,
               };
               queue.cycles.splice(
@@ -1742,8 +1931,9 @@ async function main() {
               );
               writeQueue(queue);
               console.log(
-                `  [RECOVERY] Tests failed after ${attempt} attempts — injecting recovery cycle`,
+                `  ${chalk.red("[RECOVERY]")} Tests failed after ${attempt} attempts — injecting recovery cycle`,
               );
+              printPendingQueue(queue);
               notify(
                 "Claude — Recovery Cycle",
                 `${attempt} test attempts exhausted`,
@@ -1765,9 +1955,9 @@ async function main() {
           "blocked",
           cycle.blockedReason,
         );
-        console.log(`\n[BLOCKED] ${cycle.id} needs human input.`);
-        console.log(`  Reason: ${cycle.blockedReason.slice(0, 120)}`);
-        console.log(`  To resume: cortex-harness resume "your answer"`);
+        console.log(`\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} needs human input.`);
+        console.log(`  ${chalk.dim("Reason:")} ${cycle.blockedReason.slice(0, 120)}`);
+        console.log(chalk.dim('  To resume: cortex-harness resume "your answer"'));
         notify(
           "Claude — Needs Input",
           `${cycle.id} blocked | ${userTask.slice(0, 60)}`,
@@ -1788,7 +1978,7 @@ async function main() {
 
         if (attempt < effectiveMaxRetries) {
           console.log(
-            `  [PARTIAL → retry] ${cycle.id}: ${reason} (attempt ${nextAttempt}/${effectiveMaxRetries})`,
+            `  ${chalk.yellow("[PARTIAL → retry]")} ${chalk.cyan(cycle.id)}: ${reason} ${chalk.dim(`(attempt ${nextAttempt}/${effectiveMaxRetries})`)}`,
           );
           notify(
             "Claude — Cycle Retrying",
@@ -1816,7 +2006,7 @@ async function main() {
             // Rate-limit with no output: keep pending so the next run retries cleanly
             appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
             console.log(
-              `  [RATE-LIMIT → pending] ${cycle.id}: no output after ${attempt} attempts — kept pending for next run`,
+              `  ${chalk.yellow("[RATE-LIMIT → pending]")} ${chalk.cyan(cycle.id)}: no output after ${attempt} attempts — kept pending for next run`,
             );
             notify(
               "Claude — Cycle Kept Pending",
@@ -1828,14 +2018,14 @@ async function main() {
             writeQueue(queue);
             appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
             console.log(
-              `  [PARTIAL] ${cycle.id} incomplete after ${attempt} attempts: ${reason}`,
+              `  ${chalk.yellow("[PARTIAL]")} ${chalk.cyan(cycle.id)} incomplete after ${attempt} attempts: ${reason}`,
             );
             const remainingAfter = queue.cycles.filter(
               (c) => c.status === "pending",
             );
             if (remainingAfter.length) {
               console.log(
-                `  [WARN] ${cycle.id} is partial — run continues but downstream cycles may be affected. Run: cortex-harness resume to retry.`,
+                `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} is partial — run continues but downstream cycles may be affected. ${chalk.dim("Run: cortex-harness resume to retry.")}`,
               );
             }
             notify(
@@ -1855,7 +2045,7 @@ async function main() {
         );
         if (attempt < effectiveMaxRetriesErr) {
           console.log(
-            `  [${result.signal.toUpperCase()} → retry ${attempt + 1}/${effectiveMaxRetriesErr}] ${cycle.id}`,
+            `  ${chalk.yellow(`[${result.signal.toUpperCase()} → retry ${attempt + 1}/${effectiveMaxRetriesErr}]`)} ${chalk.cyan(cycle.id)}`,
           );
           notify(
             "Claude — Cycle Retrying",
@@ -1879,7 +2069,7 @@ async function main() {
             cycle.blockedReason,
           );
           console.log(
-            `\n[BLOCKED] ${cycle.id} ${result.signal} — ${attempt} attempts exhausted.`,
+            `\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} ${result.signal} — ${attempt} attempts exhausted.`,
           );
           notify("Claude — Cycle Failed", `${cycle.id} | ${result.signal}`);
           shouldBreak = true;
@@ -1910,15 +2100,15 @@ async function main() {
         : `${elapsed}s`;
 
   console.log("");
-  console.log("━━━ Run Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`Done     : ${done}`);
-  console.log(`Partial  : ${partial}`);
-  console.log(`Blocked  : ${blocked}`);
-  console.log(`Pending  : ${pending}`);
-  console.log(`Duration : ${duration}`);
-  console.log(`Spent    : $${totalSpentUsd.toFixed(2)} / $${MAX_BUDGET_USD}`);
-  console.log(`Log      : ${runLogFile}`);
-  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(chalk.bold.blue("━━━ Run Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+  console.log(`${chalk.dim("Done     :")} ${done > 0 ? chalk.green(done) : done}`);
+  console.log(`${chalk.dim("Partial  :")} ${partial > 0 ? chalk.yellow(partial) : partial}`);
+  console.log(`${chalk.dim("Blocked  :")} ${blocked > 0 ? chalk.red(blocked) : blocked}`);
+  console.log(`${chalk.dim("Pending  :")} ${pending > 0 ? chalk.yellow(pending) : pending}`);
+  console.log(`${chalk.dim("Duration :")} ${duration}`);
+  console.log(`${chalk.dim("Spent    :")} $${totalSpentUsd.toFixed(2)} / $${MAX_BUDGET_USD}`);
+  console.log(`${chalk.dim("Log      :")} ${runLogFile}`);
+  console.log(chalk.bold.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
 
   appendLog({
     type: "harness",

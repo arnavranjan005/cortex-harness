@@ -28,6 +28,7 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
   - "Add X" but it clearly replaces or removes existing behavior → `edit-feature`
   - Unsure between fix and edit → ask "Is the current behavior intentional?" (yes → edit, no → fix)
   - Multi-surface or ambiguous scope → spawn `planner-subagent` before choosing a prompt
+- **Multi-intent:** if the task contains multiple distinct verb clusters (e.g. "fix X and add Y and change Z") → orchestrate decomposes into ordered groups (fix → edit → implement/create), each with its own cycle sequence. Set `promptType: "multi-intent"` in task-queue.json. Do NOT route everything to one prompt type — each sub-task must use the correct prompt. See `project_harness_architecture.md` for the full decomposition rules.
 
 ### 3. Orchestrator role
 - Never edit source files directly — all edits must be delegated to a sub-agent from `.harness/agents/`

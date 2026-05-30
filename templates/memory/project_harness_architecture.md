@@ -20,12 +20,16 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 | plan | `plan` | Read-only work packages (planner-subagent) — conditional on multi-surface or shared contracts |
 | implement-* | `implement` | Source file edits within declared scope; scope violations auto-reverted |
 | reconcile | `reconcile` | Contract check + gap resolution + consistency |
+| reconcile-cross-group | `reconcile` | Multi-intent only — checks contracts across all groups; may emit `requiresAdditionalGroups` to inject new cycle groups |
 | test | `test` | `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 clean retries |
 | fix-* | `fix` | Injected dynamically on test failure, up to MAX_RETRIES=2 |
 | recovery | `recovery` | Injected after MAX_RETRIES exhausted — reads orchestration.md, re-chains |
 | deliver | `deliver` | Reads all cycle-state/ files, produces unified summary |
 
-Sequence enforced by harness: `orchestrate → explore → plan? → implement-* → reconcile → test → [fix-* → test-retry]* → [recovery]? → deliver`
+Single-intent sequence: `orchestrate → explore → plan? → implement-* → reconcile → test → [fix-* → test-retry]* → [recovery]? → deliver`
+
+Multi-intent sequence: `orchestrate → [shared-explore] → [fix-group cycles] → [edit-group cycles] → [implement-group cycles] → reconcile-cross-group → [additional-group cycles?] → deliver`
+Each group runs: `[reproduce?] → explore? → implement-* → reconcile-group → test-group → [fix-* → test-retry]*`
 
 ## State transfer
 
@@ -34,12 +38,17 @@ Each cycle writes a JSON file to `.harness/cycle-state/`. The next cycle's promp
 | File | Written by | Read by |
 |---|---|---|
 | `task-queue.json` | orchestrate | outer loop (drives cycle execution) |
-| `skills.json` | orchestrate | all implement cycles (as `## Skill guidance`) |
-| `explore.json` | explore | plan, implement-*, reconcile |
-| `plan.json` | plan | implement-*, reconcile |
-| `implement-*.json` | each implement cycle | reconcile |
-| `reconcile.json` | reconcile | test, deliver |
-| `test.json` | test | outer loop (branches on `passed` field) |
+| `skills.json` | orchestrate | all implement cycles (as `## Skill guidance`) — no group suffix, always shared |
+| `explore.json` | explore (shared) | all groups via fallback |
+| `explore-<group>.json` | explore (per-group) | only that group's implement/reconcile cycles |
+| `plan.json` / `plan-<group>.json` | plan | implement-*, reconcile for same group |
+| `implement-*-<group>.json` | each implement cycle | reconcile for same group; ALL groups' impls visible to subsequent implement cycles |
+| `reconcile-<group>.json` | per-group reconcile | test for same group |
+| `reconcile-cross-group.json` | reconcile-cross-group | deliver; outer loop checks `requiresAdditionalGroups` |
+| `test-<group>.json` | test per group | outer loop (branches on `passed`; group-suffixed fix cycles injected on failure) |
+| `test.json` | test (single-intent) | outer loop |
+
+For single-intent tasks all files are un-suffixed — backward compatible with the original design.
 
 ## Scope enforcement and auto-update
 
@@ -83,10 +92,36 @@ Every cycle must end its final message with exactly one:
 - **Turn cap**: test cycle capped at 25 turns/slice; all others at 500 (safety net)
 - **Scope revert**: out-of-scope writes cascade through `git restore → git clean -f → git show HEAD → unlinkSync`
 
+## Multi-intent decomposition
+
+When a task contains multiple distinct intent signals (fix + edit + implement/create), orchestrate decomposes it:
+- `promptType: "multi-intent"` in task-queue.json; `intents[]` lists each sub-task with its `group` slug and `promptType`
+- Each cycle entry carries `taskGroup` (short kebab slug, max 3 words: verb-noun) and `subTask`
+- Shared cycles (explore when overlapping surfaces, reconcile-cross-group, deliver) omit `taskGroup`
+- Execution order across groups: fix → edit → implement/create (fixes restore state first)
+- Shared explore: one `explore.json` for overlapping surfaces; `priorContext` falls back to it automatically
+- Per-group reconcile checks intra-group contracts; reconcile-cross-group checks inter-group contracts
+- If reconcile-cross-group finds a group used the wrong workflow, it writes `requiresAdditionalGroups[]` in its output; the runner injects new cycle groups (explore → implement-* → reconcile → test) before deliver
+
+## Dynamic injection
+
+The queue is a living file. The runner injects cycles at runtime:
+
+| Trigger | What gets injected | Before |
+|---|---|---|
+| test fails, retries remain | `fix-<surface>-attempt-N[-group]` + `test-retry-N[-group]` | deliver |
+| test fails, retries exhausted | `recovery[-group]` | deliver |
+| scope violation can't auto-revert | `scope-cleanup-<cycleId>` | next implement or reconcile |
+| reconcile-cross-group finds wrong workflow | additional group cycles per `requiresAdditionalGroups[]` | deliver |
+
+All injected cycles inherit `taskGroup` and `subTask` from the triggering cycle where applicable.
+
 ## Cycle output validation
 
 `cycle-schemas.mjs` validates all cycle output files after each cycle completes:
-- `test.json` is critical: invalid JSON → treat as failed; missing `passed` field → default `false`
+- `test.json` / `test-<group>.json` is critical: invalid JSON → treat as failed; missing `passed` field → default `false`
+- `reconcile-cross-group.json` is non-critical: invalid JSON → skip `requiresAdditionalGroups` check, continue
 - All other files: warn + continue (wrong structure means less context, not wrong execution path)
+- Schema registry patterns use `(-[^.]+)?` suffix matching so group-suffixed files validate against the same schemas
 
 [[feedback-claude-md-compliance]]

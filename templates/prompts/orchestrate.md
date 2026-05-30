@@ -9,7 +9,7 @@ HARD STOP — the following are FORBIDDEN in this cycle, no exceptions:
 - Do NOT implement, fix, or change any code.
 Violating any of the above means you have failed this cycle. The only tools you may use are: Read, Write (for .harness/ files only), Skill, Glob, Grep.
 
-## Your job — 6 steps, then stop
+## Your job — 8 steps, then stop
 
 1. Read CLAUDE.md fully — understand the routing table, sub-agent ownership, reconciliation protocol.
 
@@ -27,7 +27,7 @@ Violating any of the above means you have failed this cycle. The only tools you 
    - "change", "update", "modify" existing behavior → edit-feature
    - "create from scratch", greenfield → create-app
 
-3.5. Disambiguate if signals conflict — check in order, stop at the first match:
+4. Disambiguate if signals conflict — check in order, stop at the first match:
    - Wrong/unexpected behavior described but no error thrown → fix-bug (wrong behavior IS a bug)
    - "Change X" / "Update X" but X does not exist in the codebase → implement-feature
    - "Add X" but it clearly removes or replaces existing behavior → edit-feature
@@ -36,33 +36,72 @@ Violating any of the above means you have failed this cycle. The only tools you 
      Do not guess. Do not proceed until the ambiguity is resolved.
    If none of the above apply, the routed type from Step 3 stands — proceed.
 
-4. Read the matching prompt file with the Read tool:
-   .harness/prompts/<type>.md
+5. Multi-intent check — does the task contain multiple distinct verb clusters?
+   Look for combinations of: (fix|broken|error) AND (add|implement|create) AND/OR (change|update|modify|edit)
+   A task with only one verb cluster, even if long, is single-intent — do NOT split.
 
-5. Map that prompt file's steps to cycles. The cycle sequence MUST mirror the prompt's step order.
+   If YES — decompose into ordered sub-tasks:
+     a. Identify each distinct intent and extract its minimal sub-task text
+     b. Order sub-tasks: fix → edit → implement/create
+        Reason: fixes restore correct state first; edits modify on top of fixes; creates add new behavior last
+     c. Route each sub-task to the correct promptType using Step 3 rules
+     d. Assign each a short slug — max 3 kebab-case words, derived from the intent verb + key noun
+        (e.g. "fix-login", "edit-dropdown", "create-invoice") — NOT the full sub-task text
+     e. Read each sub-task's prompt file: .harness/prompts/<type>.md (one Read call per intent type — counted as Step 6 for multi-intent tasks)
+     f. Shared explore (default): if intents may touch overlapping surfaces, emit ONE explore cycle
+        with no taskGroup and outputFile: "explore.json" — all groups fall back to it automatically.
+        Per-group explore: only if the task description makes it clear the intents are on completely
+        separate surfaces with no shared code. When in doubt, use shared explore.
+     g. Build a separate cycle group per sub-task — each group gets its own implement-*, reconcile, test
+     h. Group suffix on all cycle ids and outputFiles: e.g. "implement-backend-fix-z", outputFile: "implement-backend-fix-z.json"
+        Shared cycles (explore when shared, deliver, reconcile-cross-group) get NO suffix
+     i. All cycles in a group carry: "taskGroup": "<slug>", "subTask": "<sub-task text>"
+        Shared cycles omit taskGroup (or set null)
+     j. After ALL groups' test cycles, add one "reconcile-cross-group" cycle:
+        { "id": "reconcile-cross-group", "type": "reconcile", "taskGroup": null,
+          "outputFile": "reconcile-cross-group.json",
+          "notes": "Cross-group contract check — verify shared type/schema changes from all groups are consumed correctly across groups" }
+     k. One shared deliver cycle at the end — always last, no taskGroup
+     l. Set promptType: "multi-intent" and write intents[] in task-queue.json
+     m. skills.json is written once (Step 2) and shared — no group suffix
+
+   If NO — taskGroup is omitted from all cycles. Proceed to Step 6.
+
+6. Read the matching prompt file with the Read tool:
+   - Single intent: .harness/prompts/<type>.md
+   - Multi-intent: already done in Step 5e — proceed to Step 7
+
+7. Map that prompt file's steps to cycles. The cycle sequence MUST mirror the prompt's step order.
    - implement-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
    - fix-bug: reproduce → explore (if needed) → implement-* → test → reconcile → deliver
    - edit-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
 
-6. Write the complete cycle plan to: .harness/task-queue.json
+8. Write the complete cycle plan to: .harness/task-queue.json
 
 ## task-queue.json schema
 
 {
   "task": "<original task verbatim>",
-  "promptType": "implement-feature | fix-bug | edit-feature | create-app",
+  "promptType": "implement-feature | fix-bug | edit-feature | create-app | multi-intent",
+  "intents": [
+    { "subTask": "<sub-task text>", "promptType": "<type>", "group": "<slug>" }
+  ],
   "cycles": [
     {
-      "id":         "<unique id, e.g. explore>",
+      "id":         "<unique id — for grouped cycles include slug, e.g. explore-fix-login>",
       "type":       "<explore|plan|reproduce|implement-backend|implement-frontend|implement-distributed|implement-infra|reconcile|test|deliver>",
       "status":     "pending",
       "agent":      "<agent name for implement types, e.g. backend-subagent>",
-      "outputFile": "<filename in cycle-state/, e.g. explore.json>",
+      "outputFile": "<filename in cycle-state/ — include slug for grouped, e.g. explore-fix-login.json>",
       "parallel":   false,
+      "taskGroup":  "<group slug for multi-intent cycles, e.g. fix-login — omit for single-intent and shared cycles>",
+      "subTask":    "<the sub-task text for this group — omit for single-intent and shared cycles>",
       "notes":      "<why this cycle is included>"
     }
   ]
 }
+
+intents[] is only written when promptType is "multi-intent". For single-intent tasks, omit it entirely.
 
 ## Hard ordering rules
 
@@ -74,5 +113,8 @@ Violating any of the above means you have failed this cycle. The only tools you 
 - test runs before deliver
 - deliver is always last
 - implement cycles with non-overlapping write scopes may set parallel: true
+- multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
+- multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before deliver
+- multi-intent: within a group, the same ordering rules apply as for single-intent
 
 Task: {{USER_TASK}}
