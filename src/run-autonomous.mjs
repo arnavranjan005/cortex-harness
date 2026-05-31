@@ -47,8 +47,9 @@ const MAX_RETRIES = 2;
 // Per-cycle turn caps. Only test is capped; others run to natural completion.
 const TURN_CAP = { test: 25 };
 
-// Test cycles with a clean turn-cap partial get up to 10 retries (progress in 25-turn slices).
-// Rate-limit or error partials fall back to MAX_RETRIES.
+// Test cycles with a clean turn-cap partial get up to 10 retries (forward progress in 25-turn slices).
+// API rate-limit or error partials fall back to MAX_RETRIES — retrying them more won't help.
+// Session/weekly limits never reach here — they're caught earlier as "session-limit" signal.
 const TEST_MAX_RETRIES_CLEAN = 10;
 
 function getTurnCap(cycle) {
@@ -58,14 +59,27 @@ function getTurnCap(cycle) {
 function getEffectiveMaxRetries(cycle, reason, signal, rawMessage = "") {
   if (cycle.type !== "test") return MAX_RETRIES;
   const textToCheck = (reason ?? "") + " " + rawMessage;
-  const isRateLimit =
+  // API rate-limit: temporary throttle — retrying >2 times won't help
+  const isApiRateLimit =
     textToCheck.includes("rate-limit") ||
-    textToCheck.includes("weekly") ||
-    textToCheck.includes("session limit") ||
-    textToCheck.includes("rate limit") ||
-    textToCheck.includes("hit your");
-  const isError = signal === "failed" || signal === "hung";
-  if (isRateLimit || isError) return MAX_RETRIES;
+    textToCheck.includes("rate limit");
+  if (isApiRateLimit) return MAX_RETRIES;
+  // "failed" or "hung" signal from an empty final message means the cycle ran out of turns
+  // without writing its closing line. Check the output file — if it recorded partial: true
+  // with a turn-cap reason, treat it as a clean turn-cap partial and allow 10 retries.
+  if (signal === "failed" || signal === "hung") {
+    if (cycle.outputFile) {
+      try {
+        const outputPath = join(CYCLE_DIR, cycle.outputFile);
+        const data = JSON.parse(readFileSync(outputPath, "utf8"));
+        if (data.partial === true && String(data.partialReason ?? "").includes("turn-cap")) {
+          return TEST_MAX_RETRIES_CLEAN;
+        }
+      } catch { /* output file missing or unreadable — fall through */ }
+    }
+    return MAX_RETRIES;
+  }
+  // Clean turn-cap partial signaled in final message: allow up to 10 × 25-turn slices
   return TEST_MAX_RETRIES_CLEAN;
 }
 
@@ -1076,6 +1090,8 @@ async function runCycle(cycle, remainingBudgetUsd) {
     const assistantLog = []; // rolling log of assistant text messages for turn-cap summary
     let deadManTimer = null;
     let settled = false;
+    let rateLimitResetsAt = null; // Unix timestamp from rate_limit_event, if seen
+    let turnCapKilled = false; // true when harness killed the process for turn-cap — close event must not race-resolve as "failed"
 
     // Resolve exactly once — subsequent calls are no-ops (grace kill / close race).
     function resolveOnce(value) {
@@ -1086,27 +1102,45 @@ async function runCycle(cycle, remainingBudgetUsd) {
       resolve(value);
     }
 
-    function detectSignal(message, code) {
-      const isRateLimit =
-        message.includes("You've hit your") ||
+    function isSessionLimitMessage(message) {
+      return (
+        message.includes("You've hit your session limit") ||
+        message.includes("You've hit your weekly limit") ||
         message.includes("session limit") ||
-        message.includes("weekly limit") ||
-        message.includes("rate limit");
+        message.includes("weekly limit")
+      );
+    }
+
+    function detectSignal(message, code) {
       if (message.includes("NEEDS_HUMAN_INPUT")) return "needs-human";
-      if (message.includes("CYCLE_COMPLETE") && !isRateLimit) return "complete";
-      if (message.match(/CYCLE_PARTIAL:/)) return "partial";
-      if (isRateLimit) {
+      if (isSessionLimitMessage(message)) {
         appendLog({
           type: "harness",
           event: "rate-limit-hit",
           cycleId: cycle.id,
           turnCount: realTurnCount || liveTurnCount || turnCount,
+          resetsAt: rateLimitResetsAt,
+        });
+        console.log(
+          `  ${chalk.red("[SESSION LIMIT]")} ${chalk.cyan(cycle.id)} hit usage limit after ${realTurnCount || liveTurnCount || turnCount} turns — halting run`,
+        );
+        return "session-limit";
+      }
+      if (message.includes("rate limit") || message.includes("rate-limit")) {
+        appendLog({
+          type: "harness",
+          event: "rate-limit-hit",
+          cycleId: cycle.id,
+          turnCount: realTurnCount || liveTurnCount || turnCount,
+          resetsAt: rateLimitResetsAt,
         });
         console.log(
           `  ${chalk.yellow("[RATE LIMIT]")} ${chalk.cyan(cycle.id)} hit rate limit after ${realTurnCount || liveTurnCount || turnCount} turns — treating as partial`,
         );
         return "partial";
       }
+      if (message.includes("CYCLE_COMPLETE")) return "complete";
+      if (message.match(/CYCLE_PARTIAL:/)) return "partial";
       if (code === 0) return "complete";
       return "failed";
     }
@@ -1220,6 +1254,10 @@ async function runCycle(cycle, remainingBudgetUsd) {
         try {
           const event = JSON.parse(line);
 
+          if (event.type === "rate_limit_event" && event.rate_limit_info?.resetsAt) {
+            rateLimitResetsAt = event.rate_limit_info.resetsAt;
+          }
+
           if (event.type === "assistant" || event.role === "assistant") {
             turnCount++;
             process.stdout.write(".");
@@ -1255,6 +1293,7 @@ async function runCycle(cycle, remainingBudgetUsd) {
 
                   if (cycle.outputFile) {
                     console.log(`  ${chalk.dim("[SUMMARY]")} Requesting progress summary...`);
+                    turnCapKilled = true;
                     killProc(proc);
                     const summary = await requestTurnCapSummary(
                       cycle.id,
@@ -1369,6 +1408,7 @@ async function runCycle(cycle, remainingBudgetUsd) {
                 code: 0,
                 turnCount: realTurnCount || liveTurnCount || turnCount,
                 finalMessage: resolvedMessage,
+                resetsAt: rateLimitResetsAt,
               });
             }
 
@@ -1409,6 +1449,8 @@ async function runCycle(cycle, remainingBudgetUsd) {
 
     proc.on("close", (code) => {
       clearTimeout(resultGraceTimer);
+      // If the harness killed the process for turn-cap, the async IIFE owns resolution — skip.
+      if (turnCapKilled) return;
       // Fallback: fires if process exits without a result event (crash, raw session limit, 0-turn).
       // If resolveOnce already fired from the result event handler, this is a no-op.
       const effectiveMessage = finalMessage || rawText;
@@ -1499,6 +1541,10 @@ async function main() {
   console.log(`${chalk.dim("Task   :")} ${userTask}`);
   console.log(`${chalk.dim("Budget :")} $${MAX_BUDGET_USD} total`);
   console.log(`${chalk.dim("Log    :")} ${runLogFile}`);
+  const { readNotificationConfig: _readNC } = await import("./notification-config.mjs");
+  if (!_readNC().exists) {
+    console.log(chalk.dim("  Notifications off — run `cortex-harness notify-setup` to enable"));
+  }
   console.log(chalk.dim("─────────────────────────────────────────────────"));
 
   appendLog({
@@ -1946,21 +1992,60 @@ async function main() {
       // ── Needs human ─────────────────────────────────────────────────────────
 
       if (result.signal === "needs-human") {
+        // Extract the question block — everything after NEEDS_HUMAN_INPUT (or full message if not prefixed)
+        const nhiIdx = result.finalMessage.indexOf("NEEDS_HUMAN_INPUT");
+        const questionText = nhiIdx !== -1
+          ? result.finalMessage.slice(nhiIdx + "NEEDS_HUMAN_INPUT".length).replace(/^[:\s–-]+/, "").trim()
+          : result.finalMessage.trim();
+
         cycle.status = "blocked";
-        cycle.blockedReason = result.finalMessage.slice(0, 300);
+        cycle.blockedType = "needs-human-input";
+        cycle.blockedReason = questionText || result.finalMessage; // full text, no truncation
         cycle.blockedAt = new Date().toISOString();
         writeQueue(queue);
         appendSessionCycle(
           `[autonomous] ${cycle.id}`,
           "blocked",
-          cycle.blockedReason,
+          cycle.blockedReason.slice(0, 200),
         );
+
         console.log(`\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} needs human input.`);
-        console.log(`  ${chalk.dim("Reason:")} ${cycle.blockedReason.slice(0, 120)}`);
-        console.log(chalk.dim('  To resume: cortex-harness resume "your answer"'));
+        console.log(chalk.dim("  ─────────────────────────────────────────────"));
+        // Print the full question, indented
+        const lines = questionText.split("\n");
+        for (const line of lines) {
+          console.log(`  ${line}`);
+        }
+        console.log(chalk.dim("  ─────────────────────────────────────────────"));
+        console.log(chalk.yellow('  Answer: cortex-harness resume "your answer"'));
+
         notify(
           "Claude — Needs Input",
-          `${cycle.id} blocked | ${userTask.slice(0, 60)}`,
+          questionText.slice(0, 100),
+          { event: "needs-human-input", cycleId: cycle.id },
+        );
+        shouldBreak = true;
+
+        // ── Session / weekly limit — halt immediately, do not retry ─────────────
+      } else if (result.signal === "session-limit") {
+        const resetsAt = result.resetsAt ?? null;
+        const resetStr = resetsAt
+          ? new Date(resetsAt * 1000).toLocaleString()
+          : "unknown — check your Claude plan";
+        cycle.status = "blocked";
+        cycle.blockedType = "session-limit";
+        cycle.blockedReason = `session/weekly limit hit — resets ${resetStr}`;
+        writeQueue(queue);
+        appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
+        console.log(
+          `\n${chalk.red("[SESSION LIMIT]")} ${chalk.cyan(cycle.id)} — usage limit reached.`,
+        );
+        console.log(`  Resets: ${chalk.yellow(resetStr)}`);
+        console.log(`  ${chalk.dim("All pending cycles are preserved. Run `cortex-harness resume` after the limit resets.")}`);
+        notify(
+          "Claude — Session Limit Hit",
+          `${cycle.id} blocked | resets ${resetStr}`,
+          { event: "session-limit", cycleId: cycle.id, resetsAt },
         );
         shouldBreak = true;
 
@@ -1993,46 +2078,25 @@ async function main() {
           );
           // cycle stays pending — picked up in next outer loop iteration
         } else {
-          const outputWritten = cycleOutputWritten(cycle);
-          const textToCheck = (reason ?? "") + " " + result.finalMessage;
-          const isRateLimit =
-            textToCheck.includes("rate-limit") ||
-            textToCheck.includes("weekly") ||
-            textToCheck.includes("session limit") ||
-            textToCheck.includes("rate limit") ||
-            textToCheck.includes("hit your");
-
-          if (isRateLimit && !outputWritten) {
-            // Rate-limit with no output: keep pending so the next run retries cleanly
-            appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
+          cycle.status = "partial";
+          cycle.partialReason = reason;
+          writeQueue(queue);
+          appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
+          console.log(
+            `  ${chalk.yellow("[PARTIAL]")} ${chalk.cyan(cycle.id)} incomplete after ${attempt} attempts: ${reason}`,
+          );
+          const remainingAfter = queue.cycles.filter(
+            (c) => c.status === "pending",
+          );
+          if (remainingAfter.length) {
             console.log(
-              `  ${chalk.yellow("[RATE-LIMIT → pending]")} ${chalk.cyan(cycle.id)}: no output after ${attempt} attempts — kept pending for next run`,
-            );
-            notify(
-              "Claude — Cycle Kept Pending",
-              `${cycle.id} | rate-limit, no output after ${attempt} attempts`,
-            );
-          } else {
-            cycle.status = "partial";
-            cycle.partialReason = reason;
-            writeQueue(queue);
-            appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
-            console.log(
-              `  ${chalk.yellow("[PARTIAL]")} ${chalk.cyan(cycle.id)} incomplete after ${attempt} attempts: ${reason}`,
-            );
-            const remainingAfter = queue.cycles.filter(
-              (c) => c.status === "pending",
-            );
-            if (remainingAfter.length) {
-              console.log(
-                `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} is partial — run continues but downstream cycles may be affected. ${chalk.dim("Run: cortex-harness resume to retry.")}`,
-              );
-            }
-            notify(
-              "Claude — Cycle Partial",
-              `${cycle.id} | ${reason.slice(0, 80)}`,
+              `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} is partial — run continues but downstream cycles may be affected. ${chalk.dim("Run: cortex-harness resume to retry.")}`,
             );
           }
+          notify(
+            "Claude — Cycle Partial",
+            `${cycle.id} | ${reason.slice(0, 80)}`,
+          );
           // Partial doesn't stop the run — next cycle proceeds
         }
 

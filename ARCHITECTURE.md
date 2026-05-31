@@ -6,30 +6,104 @@ This document covers the internal mechanics of `src/run-autonomous.mjs` and `bin
 
 ## Overview
 
-Cortex runs a deterministic state machine driven by a **task queue**. Every cycle runs inside a subprocess (`claude -p`), emits exactly one signal, and writes a Zod-validated JSON output file. The outer loop reads signals and advances the queue.
+Cortex runs a deterministic state machine driven by a **task queue**. Every cycle runs inside a subprocess (`claude -p`), emits exactly one signal, and writes a Zod-validated JSON output file. The outer loop reads signals and advances the queue. For multi-intent tasks, the queue is decomposed into ordered groups at plan time and may be extended at runtime by the cross-group reconcile cycle.
 
 ---
 
 ## Task Queue
 
-The `orchestrate` cycle writes `task-queue.json` — a manifest that defines every downstream cycle, its type, the owning agent, its output file, and whether it may run in parallel. The main loop consumes this file one batch at a time. Nothing after `orchestrate` is hardcoded.
+The `orchestrate` cycle writes `.harness/task-queue.json` — a manifest that defines every downstream cycle, its type, the owning agent, its output file, and whether it may run in parallel. The main loop consumes this file one batch at a time. Nothing after `orchestrate` is hardcoded.
+
+**Single-intent example:**
 
 ```json
 {
   "task": "add product listing page",
   "promptType": "implement-feature",
   "cycles": [
-    { "id": "explore",            "type": "explore",   "status": "pending", "parallel": false },
-    { "id": "implement-backend",  "type": "implement", "status": "pending", "parallel": true,
+    { "id": "explore",            "type": "explore",              "status": "pending", "parallel": false },
+    { "id": "implement-backend",  "type": "implement-backend",    "status": "pending", "parallel": true,
       "agent": "backend-subagent" },
-    { "id": "implement-frontend", "type": "implement", "status": "pending", "parallel": true,
+    { "id": "implement-frontend", "type": "implement-frontend",   "status": "pending", "parallel": true,
       "agent": "frontend-subagent" },
-    { "id": "reconcile",          "type": "reconcile", "status": "pending", "parallel": false },
-    { "id": "test",               "type": "test",      "status": "pending", "parallel": false },
-    { "id": "deliver",            "type": "deliver",   "status": "pending", "parallel": false }
+    { "id": "reconcile",          "type": "reconcile",            "status": "pending", "parallel": false },
+    { "id": "test",               "type": "test",                 "status": "pending", "parallel": false },
+    { "id": "deliver",            "type": "deliver",              "status": "pending", "parallel": false }
   ]
 }
 ```
+
+**Multi-intent example** (two groups + shared cycles):
+
+```json
+{
+  "task": "fix broken search, add export CSV",
+  "promptType": "multi-intent",
+  "intents": [
+    { "subTask": "fix broken search filter", "promptType": "fix-bug",           "group": "fix-search" },
+    { "subTask": "add export to CSV feature", "promptType": "implement-feature", "group": "add-export" }
+  ],
+  "cycles": [
+    { "id": "explore",                          "type": "explore",           "status": "pending", "parallel": false },
+    { "id": "reproduce-fix-search",             "type": "reproduce",         "status": "pending", "taskGroup": "fix-search",  "subTask": "fix broken search filter" },
+    { "id": "implement-backend-fix-search",     "type": "implement-backend", "status": "pending", "taskGroup": "fix-search",  "agent": "backend-subagent",  "parallel": true },
+    { "id": "implement-frontend-fix-search",    "type": "implement-frontend","status": "pending", "taskGroup": "fix-search",  "agent": "frontend-subagent", "parallel": true },
+    { "id": "reconcile-fix-search",             "type": "reconcile",         "status": "pending", "taskGroup": "fix-search"  },
+    { "id": "test-fix-search",                  "type": "test",              "status": "pending", "taskGroup": "fix-search"  },
+    { "id": "implement-backend-add-export",     "type": "implement-backend", "status": "pending", "taskGroup": "add-export", "agent": "backend-subagent",  "parallel": true },
+    { "id": "implement-frontend-add-export",    "type": "implement-frontend","status": "pending", "taskGroup": "add-export", "agent": "frontend-subagent", "parallel": true },
+    { "id": "reconcile-add-export",             "type": "reconcile",         "status": "pending", "taskGroup": "add-export" },
+    { "id": "test-add-export",                  "type": "test",              "status": "pending", "taskGroup": "add-export" },
+    { "id": "reconcile-cross-group",            "type": "reconcile",         "status": "pending", "taskGroup": null          },
+    { "id": "deliver",                          "type": "deliver",           "status": "pending", "parallel": false          }
+  ]
+}
+```
+
+---
+
+## Multi-Intent Decomposition
+
+When the orchestrate cycle detects mixed verb clusters in the task description (e.g. fix + implement + edit), it decomposes the task into ordered **groups** before writing the queue.
+
+**Ordering rule:** fix groups run before edit groups, which run before implement/create groups. This ensures fixes restore correct state before new behavior is layered on top.
+
+**Shared explore (default):** A single shared `explore` cycle (no `taskGroup`, `outputFile: "explore.json"`) feeds all groups. Per-group explores are only emitted when the task description makes it unambiguous that the groups touch completely separate surfaces with no shared code.
+
+**Group cycle naming:** All cycles in a group carry `taskGroup: "<slug>"` and `subTask: "<text>"`. Their `id` and `outputFile` include the group slug as a suffix (e.g. `implement-backend-fix-search`, `test-fix-search.json`). Shared cycles (`explore`, `reconcile-cross-group`, `deliver`) omit `taskGroup`.
+
+**Context propagation:** Each implement and reconcile cycle receives ALL previously completed implement reports as prior context — not just its own group's. This gives later groups visibility into what earlier groups changed, enabling correct shared-contract decisions.
+
+---
+
+## Cross-Group Reconcile & Dynamic Queue Extension
+
+After all groups' test cycles complete, `reconcile-cross-group` runs as a shared reconcile step. Its job is to verify that shared type/schema changes made by one group are correctly consumed by all other groups.
+
+It also performs **workflow type validation**: it reviews each group's implement reports and checks whether the cycle type (fix-bug, implement-feature, edit-feature) was appropriate given what the agent actually found. If a mismatch is detected — for example, a fix-bug group found no actual bug, or an implement group found it first needed to fix something broken — the reconcile report includes a `requiresAdditionalGroups[]` array.
+
+```json
+{
+  "requiresAdditionalGroups": [
+    {
+      "reason": "implement-backend-add-export found that the export endpoint is broken, not absent — needs fix first",
+      "subTask": "fix broken export endpoint",
+      "suggestedPromptType": "fix-bug",
+      "suggestedAgents": ["backend-subagent"],
+      "group": "fix-export-endpoint"
+    }
+  ]
+}
+```
+
+The runner reads this after `reconcile-cross-group` completes and calls `injectAdditionalGroups()`, which:
+
+1. Calls `buildAdditionalGroupCycles()` — constructs a full cycle group (reproduce if fix-bug, explore, implement-*, reconcile, test) for each entry
+2. Splices the new cycles into the queue immediately before the `deliver` cycle
+3. Writes the updated queue to disk
+4. Prints the modified pending queue to the terminal
+
+This means the plan is self-correcting: wrong workflow types discovered during execution are handled automatically without human intervention.
 
 ---
 
@@ -42,13 +116,33 @@ while (queue has pending cycles):
   for each result:
     signal = extract signal from output
     update cycle status in queue
-    CYCLE_COMPLETE      → advance queue
+    CYCLE_COMPLETE      → advance queue; check for additional groups (reconcile-cross-group)
     CYCLE_PARTIAL       → retry or inject fix cycles (see below)
     NEEDS_HUMAN_INPUT   → stop, surface block to user
   check budget: remaining ≤ $0.10 → stop loop
+
+print run summary (done / partial / blocked / pending / duration / cost)
 ```
 
 Parallel batches are validated before execution via `safeToParallelize()` — if two parallel cycles have overlapping declared file-path scopes (per `harness.config.json`), they are serialized automatically rather than failing.
+
+---
+
+## Run Summary
+
+At the end of every run the harness prints a summary dashboard:
+
+```
+━━━ Run Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Done     : 11
+Partial  : 0
+Blocked  : 1
+Pending  : 0
+Duration : 42m 18s
+Spent    : $8.41 / $20
+Log      : .harness/runs/2026-05-31T....jsonl
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
 
 ---
 
@@ -124,6 +218,27 @@ The in-memory `CONFIGURED_AGENTS` map is also updated immediately, so subsequent
 
 ---
 
+## Zod Schema Validation
+
+Every cycle output file is matched against a named Zod schema before its contents are used as context for downstream cycles. The pattern matching is regex-based to handle group-suffixed filenames:
+
+| Pattern | Schema |
+|---|---|
+| `skills.json` | `SkillsReport` |
+| `explore[-<group>].json` | `ExploreReport` |
+| `plan[-<group>].json` | `PlanReport` |
+| `reproduce[-<group>].json` | `ReproduceReport` |
+| `implement-*.json` | `ImplementReport` |
+| `reconcile[-<group>].json` | `ReconcileReport` |
+| `test[-<group>].json` | `TestReport` |
+| `fix-*.json` | `FixReport` |
+
+On schema mismatch, a warning is printed and conservative defaults (from `CONSERVATIVE_DEFAULTS`) fill in missing critical fields — the run continues rather than aborting.
+
+The `ReconcileReport` schema includes the optional `requiresAdditionalGroups` field (array of `AdditionalGroupEntry`) used by `reconcile-cross-group` to trigger dynamic queue extension.
+
+---
+
 ## Surface Detection (init)
 
 `bin/cli.mjs` recursively walks the project tree on `init`, skipping standard ignore directories (`node_modules`, `.git`, `dist`, `build`, `.nx`, etc.). A directory is treated as a **project root** when it contains `src/`, `project.json`, `index.ts`, or `index.js`.
@@ -168,23 +283,41 @@ The `<!-- cortex:frontend-checks -->` sentinel generates Nx run commands from th
 
 ---
 
+## Gitignore Management
+
+`init` and the standalone `cortex-harness gitignore` command both call `patchGitignore()`, which appends a fenced block to the project's `.gitignore`:
+
+```
+# cortex-harness
+.harness/runs/
+.harness/cycle-state/
+.harness/output/
+.harness/session.json
+.harness/notification-channels.local.json
+# /cortex-harness
+```
+
+The function is idempotent — it checks for the `# cortex-harness` block before writing and skips if already present. `.harness/task-queue.json` is intentionally **not** gitignored: it contains the cycle plan the orchestrator writes and that users may want to inspect or commit.
+
+---
+
 ## Fix Injection & Recovery
 
 ```
 test fails
   ↓
-inject fix-<surface>-attempt-1    (re-delegate to owning agent with exact error)
-inject test-retry-1
+inject fix-<surface>-attempt-1[-<group>]    (re-delegate to owning agent with exact error)
+inject test-retry-1[-<group>]
   ↓ still failing
-inject fix-<surface>-attempt-2
-inject test-retry-2
+inject fix-<surface>-attempt-2[-<group>]
+inject test-retry-2[-<group>]
   ↓ MAX_RETRIES (2) exhausted
-inject recovery cycle             (reads prompt-orchestration.md, applies chaining rules)
+inject recovery[-<group>] cycle             (reads prompt-orchestration.md, applies chaining)
   ↓
-deliver                           (with residual risks noted)
+deliver                                     (with residual risks noted)
 ```
 
-Fix cycles carry the exact error output from the preceding test run. Each retry targets the agent that owns the broken surface per the routing table.
+Fix cycles carry the exact error output from the preceding test run. Each retry targets the agent that owns the broken surface per the routing table. In multi-intent runs, fix and retry cycles carry the group's `taskGroup` and `subTask` fields so context is scoped correctly.
 
 ---
 
@@ -196,12 +329,14 @@ Fix cycles carry the exact error output from the preceding test run. Each retry 
 
 Every subprocess event — text deltas, tool calls, cost data, results — is appended as newline-delimited JSON to `.harness/runs/<timestamp>.jsonl`, providing a full audit trail of every run.
 
+The final deliver summary is also written to `.harness/output/delivery-<timestamp>.md` so it survives the session and can be referenced later.
+
 ---
 
 ## Windows Spawning
 
 On Windows, Cortex avoids shell quote-handling issues with long prompts by:
 
-1. Writing the full cycle prompt to a UTF-8 `.txt` temp file
+1. Writing the full cycle prompt to a UTF-8 `.txt` temp file in `.harness/runs/`
 2. Generating a `.ps1` wrapper script that reads and passes the file
 3. Spawning `powershell.exe` to execute the wrapper

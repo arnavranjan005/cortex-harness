@@ -7,7 +7,7 @@ import {
   redactWebhook,
   validateDiscordWebhookUrl,
   writeNotificationConfig,
-} from './notification-config.mjs';
+} from '../notification-config.mjs';
 import { sendDiscordNotification } from './notify-discord.mjs';
 import { sendWindowsNotification } from './notification-windows.mjs';
 
@@ -95,10 +95,10 @@ async function registerWindows() {
   console.log('Registering Windows notifications for the harness.');
   console.log('A test toast will be sent now.');
 
-  const result = sendWindowsNotification(
-    'Claude Harness',
-    'Windows notification channel test',
-  );
+  const result = await sendWindowsNotification({
+    title: 'Claude Harness',
+    message: 'Windows notification channel test',
+  });
 
   if (!result.ok) {
     throw new Error(`Windows test notification failed: ${result.error}.`);
@@ -205,10 +205,10 @@ function listChannels() {
 }
 
 async function testWindows() {
-  const result = sendWindowsNotification(
-    'Claude Harness',
-    'Windows notification test',
-  );
+  const result = await sendWindowsNotification({
+    title: 'Claude Harness',
+    message: 'Windows notification test',
+  });
 
   if (!result.ok) {
     throw new Error(`Windows notification test failed: ${result.error}`);

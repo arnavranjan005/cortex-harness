@@ -1,6 +1,7 @@
-﻿/**
- * Resume a blocked autonomous run with a human answer.
- * Refactored to be configuration-driven.
+/**
+ * Resume a blocked autonomous run.
+ * Answers are collected interactively by the CLI before this script is called.
+ * This script only marks blocked cycles as pending and starts the run.
  */
 
 import { spawn } from "child_process";
@@ -12,11 +13,7 @@ import { loadConfig } from "./config-loader.mjs";
 const config = await loadConfig();
 const { harnessDir: HARNESS_DIR } = config;
 
-const CYCLE_DIR = join(HARNESS_DIR, "cycle-state");
 const QUEUE_FILE = join(HARNESS_DIR, "task-queue.json");
-const ANSWERS_FILE = join(CYCLE_DIR, "human-answers.json");
-
-const humanAnswer = process.argv.slice(2).join(" ").trim();
 
 if (!existsSync(QUEUE_FILE)) {
   console.error("[ERROR] No task-queue.json found. Nothing to resume.");
@@ -35,25 +32,21 @@ const blockedCycles = queue.cycles.filter((c) => c.status === "blocked");
 if (!blockedCycles.length) {
   console.log("[INFO] No blocked cycles found. Resuming normally...");
 } else {
-  // Logic to save humanAnswer to ANSWERS_FILE (abbreviated)
-  const answers = existsSync(ANSWERS_FILE) ? JSON.parse(readFileSync(ANSWERS_FILE, "utf8")) : [];
-  answers.push({
-    answeredAt: new Date().toISOString(),
-    resolvedCycles: blockedCycles.map(c => c.id),
-    decisions: blockedCycles.map(c => ({ cycleId: c.id, answer: humanAnswer }))
-  });
-  writeFileSync(ANSWERS_FILE, JSON.stringify(answers, null, 2), "utf8");
+  const sessionLimitCycles = blockedCycles.filter((c) => c.blockedType === "session-limit");
+  if (sessionLimitCycles.length) {
+    console.log(`[RESUME] ${sessionLimitCycles.length} session-limit cycle(s) will retry.`);
+  }
 
-  // Mark blocked as pending so they retry with the new context
   for (const c of blockedCycles) {
     c.status = "pending";
+    delete c.blockedType;
     delete c.blockedReason;
+    delete c.blockedAt;
   }
   writeFileSync(QUEUE_FILE, JSON.stringify(queue, null, 2), "utf8");
-  console.log(`[RESUME] Added answer and marked ${blockedCycles.length} cycle(s) for retry.`);
+  console.log(`[RESUME] Marked ${blockedCycles.length} cycle(s) for retry.`);
 }
 
 // Spawn run-autonomous.mjs
 const enginePath = join(fileURLToPath(import.meta.url), "..", "run-autonomous.mjs");
 spawn("node", [enginePath], { stdio: "inherit", cwd: process.cwd() });
-

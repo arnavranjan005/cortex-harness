@@ -26,6 +26,8 @@ test('--help exits 0 and shows commands', () => {
   assert.ok(result.stdout.includes('init'), 'should list init command');
   assert.ok(result.stdout.includes('run'), 'should list run command');
   assert.ok(result.stdout.includes('resume'), 'should list resume command');
+  assert.ok(result.stdout.includes('notify-setup'), 'should list notify-setup command');
+  assert.ok(result.stdout.includes('notify'), 'should list notify command');
 });
 
 test('init scaffolds .harness/ directory with prompts and agents', () => {

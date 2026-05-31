@@ -11,6 +11,18 @@ import chalk from "chalk";
 import { createRequire } from "module";
 const _require = createRequire(import.meta.url);
 
+import {
+  createEmptyNotificationConfig,
+  getDiscordRegistrations,
+  NOTIFICATION_CONFIG_FILE,
+  readNotificationConfig,
+  redactWebhook,
+  validateDiscordWebhookUrl,
+  writeNotificationConfig,
+} from "../src/notification-config.mjs";
+import { sendWindowsNotification } from "../src/notifications/notification-windows.mjs";
+import { sendDiscordNotification } from "../src/notifications/notify-discord.mjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const pkgRoot = path.join(__dirname, "..");
@@ -26,6 +38,37 @@ program
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+const GITIGNORE_BLOCK_START = "# cortex-harness";
+const GITIGNORE_BLOCK_END = "# /cortex-harness";
+const GITIGNORE_RUNTIME_ENTRIES = [
+  ".harness/runs/",
+  ".harness/cycle-state/",
+  ".harness/output/",
+  ".harness/session.json",
+  ".harness/notification-channels.local.json",
+];
+
+async function patchGitignore(cwd) {
+  const gitignorePath = path.join(cwd, ".gitignore");
+  const block =
+    `${GITIGNORE_BLOCK_START}\n` +
+    GITIGNORE_RUNTIME_ENTRIES.join("\n") +
+    `\n${GITIGNORE_BLOCK_END}`;
+
+  if (await fs.pathExists(gitignorePath)) {
+    const existing = await fs.readFile(gitignorePath, "utf8");
+    if (existing.includes(GITIGNORE_BLOCK_START)) {
+      return "present";
+    }
+    const separator = existing.endsWith("\n") ? "\n" : "\n\n";
+    await fs.appendFile(gitignorePath, `${separator}${block}\n`);
+    return "appended";
+  } else {
+    await fs.writeFile(gitignorePath, `${block}\n`);
+    return "created";
+  }
+}
+
 async function getAllFiles(dir) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files = [];
@@ -37,13 +80,21 @@ async function getAllFiles(dir) {
   return files;
 }
 
+function fileIcon(status) {
+  if (status === "created") return chalk.green("+");
+  if (status === "updated") return chalk.yellow("↑");
+  return chalk.dim("–");
+}
+
 // Copy a single file, prompting keep/update if it already exists.
 // Returns "created" | "updated" | "kept"
 async function copyFile(src, dest, rel, rl) {
   const exists = await fs.pathExists(dest);
   if (exists) {
-    const answer = await rl.question(`  ? ${rel} already exists. Keep [k] or update [u]? `);
-    if (!answer.toLowerCase().startsWith("u")) {
+    const answer = await rl.question(
+      `  ${chalk.yellow("?")} ${chalk.dim(rel)} already exists — update? ${chalk.dim("[y/N]")}: `
+    );
+    if (!answer.toLowerCase().startsWith("y")) {
       return "kept";
     }
   }
@@ -60,8 +111,7 @@ async function copyDir(srcDir, destDir, rl, rootLabel) {
     const rel = path.join(rootLabel, path.relative(srcDir, srcFile));
     const destFile = path.join(destDir, path.relative(srcDir, srcFile));
     const status = await copyFile(srcFile, destFile, rel, rl);
-    const icon = status === "kept" ? "–" : status === "updated" ? "↑" : "+";
-    console.log(`  ${icon} ${rel}`);
+    console.log(`  ${fileIcon(status)} ${chalk.dim(rel)}`);
   }
 }
 
@@ -140,26 +190,28 @@ async function confirmSurfaces(detected, rl) {
 
   async function ask(label, defaults) {
     const hint = fmt(defaults);
-    const display = hint ? chalk.dim(`[${hint}]`) : chalk.dim("[none detected — enter path or leave blank to skip]");
-    const raw = await rl.question(`  ${label} ${display}: `);
+    const display = hint
+      ? chalk.cyan(`[${hint}]`)
+      : chalk.dim("[none — enter path or leave blank to skip]");
+    const raw = await rl.question(`  ${chalk.bold(label)} ${display}: `);
     if (!raw.trim()) return defaults ?? [];
     return raw.split(",").map((s) => s.trim()).filter(Boolean);
   }
 
   if (!isNx) {
     console.log(chalk.yellow("\n  No nx.json found — this doesn't look like an Nx workspace."));
-    console.log("  Enter your project surface paths manually, or press Enter to skip.\n");
+    console.log(chalk.dim("  Enter your project surface paths manually, or press Enter to skip.\n"));
   } else {
-    console.log("\n  Nx workspace detected. Confirm surface paths (Enter = keep detected value).\n");
+    console.log(chalk.dim("\n  Nx workspace detected. Confirm surface paths — press Enter to accept.\n"));
   }
 
   return {
-    backend:      await ask("Backend / serverless paths ", d.backend      ?? []),
-    frontend:     await ask("Frontend paths             ", d.frontend     ?? []),
-    distributed:  await ask("Worker / queue paths       ", d.distributed  ?? []),
-    sharedSchema: await ask("Shared schema lib paths    ", d.sharedSchema ?? []),
-    sharedTypes:  await ask("Shared types lib paths     ", d.sharedTypes  ?? []),
-    sharedUi:     await ask("Shared UI lib paths        ", d.sharedUi     ?? []),
+    backend:      await ask("Backend / serverless paths", d.backend      ?? []),
+    frontend:     await ask("Frontend paths            ", d.frontend     ?? []),
+    distributed:  await ask("Worker / queue paths      ", d.distributed  ?? []),
+    sharedSchema: await ask("Shared schema lib paths   ", d.sharedSchema ?? []),
+    sharedTypes:  await ask("Shared types lib paths    ", d.sharedTypes  ?? []),
+    sharedUi:     await ask("Shared UI lib paths       ", d.sharedUi     ?? []),
   };
 }
 
@@ -267,10 +319,19 @@ program
 
     const rl = createInterface({ input, output });
 
-    console.log("\nInitializing cortex-harness...\n");
+    const W = Math.min(process.stdout.columns || 72, 72);
+    const line = chalk.dim("─".repeat(W));
+
+    console.log();
+    console.log(chalk.bold.cyan("  cortex-harness") + chalk.dim(` v${pkgVersion}  —  init`));
+    console.log(line);
+
+    function section(label) {
+      console.log("\n" + chalk.bold(`  ${label}`));
+    }
 
     // 1. Prompts
-    console.log(".harness/prompts/");
+    section("Scaffolding prompts");
     await copyDir(
       path.join(templatesDir, "prompts"),
       path.join(targetHarnessDir, "prompts"),
@@ -278,7 +339,7 @@ program
     );
 
     // 2. Agents
-    console.log("\n.harness/agents/");
+    section("Scaffolding agents");
     await copyDir(
       path.join(templatesDir, "agents"),
       path.join(targetHarnessDir, "agents"),
@@ -287,7 +348,7 @@ program
 
     // 3. Memory
     if (await fs.pathExists(path.join(templatesDir, "memory"))) {
-      console.log("\n.harness/memory/");
+      section("Scaffolding memory");
       await copyDir(
         path.join(templatesDir, "memory"),
         path.join(targetHarnessDir, "memory"),
@@ -297,7 +358,7 @@ program
 
     // 4. Scripts
     if (await fs.pathExists(path.join(templatesDir, "scripts"))) {
-      console.log("\n.harness/scripts/");
+      section("Scaffolding scripts");
       await fs.ensureDir(path.join(targetHarnessDir, "scripts"));
       await copyDir(
         path.join(templatesDir, "scripts"),
@@ -307,7 +368,7 @@ program
     }
 
     // 5. .claude/settings.json — always merge hooks, never prompt (additive only)
-    console.log("\n.claude/");
+    section("Wiring Claude hooks");
     await fs.ensureDir(targetClaudeDir);
     const settingsPath = path.join(targetClaudeDir, "settings.json");
     const settingsTemplatePath = path.join(templatesDir, ".claude", "settings.json");
@@ -317,63 +378,73 @@ program
         const existing = await fs.readJson(settingsPath);
         existing.hooks = { ...existing.hooks, ...templateSettings.hooks };
         await fs.writeJson(settingsPath, existing, { spaces: 2 });
-        console.log("  ↑ .claude/settings.json (merged harness hooks)");
+        console.log(`  ${chalk.yellow("↑")} ${chalk.dim(".claude/settings.json")}  ${chalk.dim("(merged harness hooks)")}`);
       } else {
         await fs.writeJson(settingsPath, templateSettings, { spaces: 2 });
-        console.log("  + .claude/settings.json");
+        console.log(`  ${chalk.green("+")} ${chalk.dim(".claude/settings.json")}`);
       }
     }
 
-    // 6. harness.config.json
-    console.log();
+    // 6. harness.config.json + CLAUDE.md — root config files
+    section("Writing root config files");
     const configPath = path.join(process.cwd(), "harness.config.json");
     const configTemplatePath = path.join(templatesDir, "harness.config.json");
     if (await fs.pathExists(configTemplatePath)) {
       const status = await copyFile(configTemplatePath, configPath, "harness.config.json", rl);
-      const icon = status === "kept" ? "–" : status === "updated" ? "↑" : "+";
-      console.log(`  ${icon} harness.config.json`);
+      console.log(`  ${fileIcon(status)} ${chalk.dim("harness.config.json")}`);
     }
 
-    // 7. CLAUDE.md
     const claudeMdPath = path.join(process.cwd(), "CLAUDE.md");
     const claudeMdTemplatePath = path.join(templatesDir, "CLAUDE.md");
     if (await fs.pathExists(claudeMdTemplatePath)) {
       const status = await copyFile(claudeMdTemplatePath, claudeMdPath, "CLAUDE.md", rl);
-      const icon = status === "kept" ? "–" : status === "updated" ? "↑" : "+";
-      console.log(`  ${icon} CLAUDE.md`);
+      console.log(`  ${fileIcon(status)} ${chalk.dim("CLAUDE.md")}`);
+    }
+
+    // 7. .gitignore
+    {
+      const result = await patchGitignore(process.cwd());
+      const note = result === "present" ? chalk.dim("  (already present)") : "";
+      console.log(`  ${fileIcon(result === "present" ? "kept" : result === "appended" ? "updated" : "created")} ${chalk.dim(".gitignore")}${note}`);
     }
 
     // 8. Surface configuration
-    console.log("\n" + chalk.bold("Configuring agent surface scopes..."));
+    console.log("\n" + line);
+    console.log(chalk.bold("  Surface configuration"));
+    console.log(line);
     const detected = await detectSurfaces(process.cwd());
     const surfaces = await confirmSurfaces(detected, rl);
 
     if (await fs.pathExists(configPath)) {
       await applySurfaces(configPath, surfaces, path.join(targetHarnessDir, "agents"));
-      console.log(chalk.green("\n  ✓ harness.config.json updated with your surface paths"));
-      console.log(chalk.green("  ✓ .harness/agents/*.agent.md scope sections updated"));
+      console.log(`\n  ${chalk.green("✓")} harness.config.json updated`);
+      console.log(`  ${chalk.green("✓")} .harness/agents/*.agent.md scope sections patched`);
     }
 
     const allEmpty = Object.values(surfaces).every((v) => v.length === 0);
     if (allEmpty) {
-      console.log(chalk.yellow("  ! No surfaces configured — edit harness.config.json manually before running"));
+      console.log(`\n  ${chalk.yellow("!")} No surfaces configured — edit harness.config.json before running`);
     } else {
       const missing = Object.entries(surfaces)
         .flatMap(([, paths]) => paths)
         .filter((p) => !fs.pathExistsSync(path.join(process.cwd(), p)));
       if (missing.length) {
-        console.log(chalk.yellow(`\n  ! These paths don't exist yet and will need to be created:`));
-        missing.forEach((p) => console.log(chalk.yellow(`      ${p}`)));
+        console.log(`\n  ${chalk.yellow("!")} These paths don't exist yet:`);
+        missing.forEach((p) => console.log(`      ${chalk.yellow(p)}`));
       }
     }
 
     rl.close();
 
-    console.log("\n" + chalk.green("Harness initialized successfully."));
-    console.log("\nNext steps:");
-    console.log("  1. Review harness.config.json — scope paths are set to your surfaces");
-    console.log("  2. Review .harness/agents/*.agent.md — Scope sections have been auto-patched");
-    console.log("  3. Run: cortex-harness run \"your task description\"");
+    // Success footer
+    console.log("\n" + line);
+    console.log(chalk.green.bold("  ✓ Harness initialized successfully"));
+    console.log(line);
+    console.log(chalk.bold("\n  Next steps\n"));
+    console.log(`  ${chalk.dim("1.")} Review ${chalk.cyan("harness.config.json")} — scope paths are set to your surfaces`);
+    console.log(`  ${chalk.dim("2.")} Review ${chalk.cyan(".harness/agents/*.agent.md")} — Scope sections have been auto-patched`);
+    console.log(`  ${chalk.dim("3.")} Run: ${chalk.cyan('cortex-harness run "your task description"')}`);
+    console.log();
   });
 
 // ─── config helpers ──────────────────────────────────────────────────────────
@@ -557,6 +628,26 @@ configCmd
     printScopeTable(config);
   });
 
+// ─── gitignore command ────────────────────────────────────────────────────────
+
+program
+  .command("gitignore")
+  .description("Append harness runtime entries to .gitignore (safe to run on existing projects)")
+  .action(async () => {
+    const result = await patchGitignore(process.cwd());
+    if (result === "present") {
+      console.log(chalk.dim("  – .gitignore already contains harness entries — nothing to do."));
+    } else if (result === "appended") {
+      console.log(chalk.green("  ✓ Appended harness runtime entries to .gitignore"));
+      console.log(chalk.dim("\n  Entries added:"));
+      GITIGNORE_RUNTIME_ENTRIES.forEach((e) => console.log(chalk.dim(`    ${e}`)));
+    } else {
+      console.log(chalk.green("  ✓ Created .gitignore with harness runtime entries"));
+      console.log(chalk.dim("\n  Entries added:"));
+      GITIGNORE_RUNTIME_ENTRIES.forEach((e) => console.log(chalk.dim(`    ${e}`)));
+    }
+  });
+
 // ─── run command ─────────────────────────────────────────────────────────────
 
 program
@@ -576,22 +667,493 @@ program
     proc.on("exit", (code) => process.exit(code ?? 0));
   });
 
+// ─── status command ───────────────────────────────────────────────────────────
+
+program
+  .command("status")
+  .description("Show the current run status — blocked questions, pending cycles, progress")
+  .action(async () => {
+    const queuePath = path.join(process.cwd(), ".harness", "task-queue.json");
+    if (!(await fs.pathExists(queuePath))) {
+      console.log(chalk.dim("  No active run found (task-queue.json missing)."));
+      console.log(chalk.dim("  Start one with: cortex-harness run \"your task\""));
+      return;
+    }
+
+    let queue;
+    try {
+      queue = await fs.readJson(queuePath);
+    } catch {
+      console.log(chalk.red("  task-queue.json exists but could not be parsed."));
+      return;
+    }
+
+    // Build a map of cycleId → full finalMessage from the most recent run log.
+    // Used to recover full question text when blockedReason was saved with the
+    // old 300-char truncation.
+    const fullMessages = {};
+    const runsDir = path.join(process.cwd(), ".harness", "runs");
+    if (await fs.pathExists(runsDir)) {
+      const logs = (await fs.readdir(runsDir))
+        .filter((f) => f.endsWith(".jsonl"))
+        .sort()
+        .reverse(); // most recent first
+      if (logs.length) {
+        try {
+          const lines = (await fs.readFile(path.join(runsDir, logs[0]), "utf8"))
+            .split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === "cycle-result" && ev.cycleId && ev.finalMessage) {
+                // Keep only the last result per cycleId (latest attempt)
+                fullMessages[ev.cycleId] = ev.finalMessage;
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        } catch { /* log unreadable — skip */ }
+      }
+    }
+
+    // Return the best available question text for a blocked cycle.
+    // Priority: run-log finalMessage > stored blockedReason + cycle output file gaps.
+    function getQuestionText(c) {
+      const stored = c.blockedReason ?? "";
+
+      // 1. Run log — use NEEDS_HUMAN_INPUT-extracted text if present and non-empty
+      if (fullMessages[c.id]) {
+        const full = fullMessages[c.id];
+        const nhiIdx = full.indexOf("NEEDS_HUMAN_INPUT");
+        const extracted = nhiIdx !== -1
+          ? full.slice(nhiIdx + "NEEDS_HUMAN_INPUT".length).replace(/^[:\s–-]+/, "").trim()
+          : "";
+        if (extracted) return extracted;
+        // extraction was empty (keyword absent) — fall through to augment with cycle state
+      }
+
+      // 2. Append outOfScopeGaps from cycle output file only when stored text looks truncated
+      // (legacy runs had a 300-char hard cap; skip gaps if stored is clearly full text)
+      const TRUNCATION_THRESHOLD = 350;
+      if (c.outputFile && stored.length < TRUNCATION_THRESHOLD) {
+        try {
+          const cycleStatePath = path.join(process.cwd(), ".harness", "cycle-state", c.outputFile);
+          const data = JSON.parse(fs.readFileSync(cycleStatePath, "utf8"));
+          const gaps = data.outOfScopeGaps ?? [];
+          if (gaps.length) {
+            const lines = gaps.map((g) => {
+              if (typeof g === "string") return `• ${g}`;
+              const parts = [`• ${g.gap ?? g.description ?? "(gap)"}`];
+              if (g.reason) parts.push(`  ${g.reason}`);
+              if (g.proposedModel) parts.push(`  Proposed model: ${g.proposedModel}`);
+              return parts.join("\n");
+            });
+            const suffix = "\n\nBlocking gaps:\n" + lines.join("\n\n");
+            return stored ? stored + suffix : suffix.trim();
+          }
+        } catch { /* output file missing or unparseable — fall through */ }
+      }
+
+      return stored;
+    }
+
+    // Word-wrap a string to fit within `width` columns, indented by `indent` spaces.
+    const TERM_WIDTH = Math.min(process.stdout.columns || 80, 100);
+    function wrap(text, indent = 2) {
+      const prefix = " ".repeat(indent);
+      const maxLen = TERM_WIDTH - indent;
+      const words = String(text ?? "").split(" ");
+      const lines = [];
+      let current = "";
+      for (const word of words) {
+        if (!current) { current = word; continue; }
+        if (current.length + 1 + word.length <= maxLen) {
+          current += " " + word;
+        } else {
+          lines.push(prefix + current);
+          current = word;
+        }
+      }
+      if (current) lines.push(prefix + current);
+      return lines.join("\n");
+    }
+
+    // Print a multi-line block, respecting existing newlines and wrapping long lines.
+    function printWrapped(text, indent = 2) {
+      for (const para of String(text ?? "").split("\n")) {
+        if (para.trim() === "") { console.log(); continue; }
+        console.log(wrap(para, indent));
+      }
+    }
+
+    const cycles = queue.cycles ?? [];
+    const done     = cycles.filter((c) => c.status === "done");
+    const pending  = cycles.filter((c) => c.status === "pending");
+    const partial  = cycles.filter((c) => c.status === "partial");
+    const blocked  = cycles.filter((c) => c.status === "blocked");
+    const needsInput = blocked.filter((c) => c.blockedType === "needs-human-input");
+    const limitHit   = blocked.filter((c) => c.blockedType === "session-limit");
+
+    const taskDisplay = (queue.task ?? "(unknown)").length > 100
+      ? (queue.task ?? "").slice(0, 100) + "…"
+      : (queue.task ?? "(unknown)");
+
+    console.log(`\n${chalk.bold.blue("━━━ Harness Status ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+    console.log(`${chalk.dim("Task   :")} ${taskDisplay}`);
+    console.log(`${chalk.dim("Type   :")} ${queue.promptType ?? "(unknown)"}`);
+    console.log(
+      `${chalk.dim("Queue  :")} ${chalk.green(done.length + " done")}  ` +
+      `${chalk.yellow(pending.length + " pending")}  ` +
+      `${chalk.yellow(partial.length + " partial")}  ` +
+      `${chalk.red(blocked.length + " blocked")}`
+    );
+
+    // ── Blocked: needs human input ──────────────────────────────────────────
+    if (needsInput.length) {
+      console.log(`\n${chalk.red.bold("  Waiting for your input:")}`);
+      for (const c of needsInput) {
+        console.log(`\n  ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`);
+        console.log(chalk.dim("  ─────────────────────────────────────────────"));
+        const questionText = getQuestionText(c);
+        if (questionText) {
+          printWrapped(questionText, 2);
+        } else {
+          console.log(chalk.dim("  (no question text recorded)"));
+        }
+        console.log(chalk.dim("  ─────────────────────────────────────────────"));
+      }
+      console.log(chalk.yellow(`\n  Answer: cortex-harness resume`));
+    }
+
+    // ── Blocked: session/weekly limit ───────────────────────────────────────
+    if (limitHit.length) {
+      console.log(`\n${chalk.red("  Usage limit hit:")}`);
+      for (const c of limitHit) {
+        const reason = c.blockedReason ?? "unknown — check your Claude plan";
+        console.log(`  ${chalk.cyan(c.id)}`);
+        console.log(wrap(reason, 4));
+      }
+      console.log(chalk.dim("\n  Resume after the limit resets: cortex-harness resume"));
+    }
+
+    // ── Partial ─────────────────────────────────────────────────────────────
+    if (partial.length) {
+      console.log(`\n${chalk.yellow("  Partial cycles (incomplete):")}`);
+      for (const c of partial) {
+        console.log(`  ${chalk.cyan(c.id)}`);
+        if (c.partialReason) console.log(wrap(c.partialReason, 4));
+      }
+    }
+
+    // ── Pending ─────────────────────────────────────────────────────────────
+    if (pending.length) {
+      console.log(`\n${chalk.dim("  Pending:")}`);
+      for (const c of pending) {
+        const group = c.taskGroup ? chalk.dim(` [${c.taskGroup}]`) : "";
+        console.log(`  ${chalk.dim("·")} ${chalk.cyan(c.id)}${group}`);
+      }
+    }
+
+    if (!blocked.length && !pending.length && !partial.length) {
+      console.log(chalk.green("\n  All cycles complete. Run is finished."));
+    }
+
+    console.log();
+  });
+
 // ─── resume command ───────────────────────────────────────────────────────────
 
 program
   .command("resume")
-  .description("Resume a blocked run, optionally providing a human answer")
-  .argument("[answer]", "Answer to provide to the blocked cycle")
-  .action((answer) => {
-    const resumePath = path.join(pkgRoot, "src", "resume-autonomous.mjs");
-    const args = [resumePath];
-    if (answer) args.push(answer);
-
-    const proc = spawn("node", args, {
-      stdio: "inherit",
-      cwd: process.cwd(),
+  .description("Resume a blocked run — walks through each blocked cycle interactively")
+  .action(async () => {
+    // Ctrl+C during prompts — exit cleanly without saving partial state
+    let cancelled = false;
+    process.once("SIGINT", () => {
+      cancelled = true;
+      console.log(chalk.yellow("\n\n  Cancelled — no changes saved. Cycles remain blocked."));
+      process.exit(0);
     });
 
+    const queueFile = path.join(process.cwd(), ".harness", "task-queue.json");
+    if (!fs.existsSync(queueFile)) {
+      console.error(chalk.red("[ERROR] No task-queue.json found. Nothing to resume."));
+      process.exit(1);
+    }
+
+    let queue;
+    try {
+      queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+    } catch (err) {
+      console.error(chalk.red("[ERROR] Failed to parse task-queue.json:", err.message));
+      process.exit(1);
+    }
+
+    const blocked = (queue.cycles ?? []).filter((c) => c.status === "blocked");
+    const needsInput = blocked.filter((c) => c.blockedType === "needs-human-input");
+    const sessionLimit = blocked.filter((c) => c.blockedType === "session-limit");
+
+    if (!blocked.length) {
+      console.log(chalk.dim("[INFO] No blocked cycles found. Starting run..."));
+    } else if (!needsInput.length) {
+      if (sessionLimit.length) {
+        console.log(chalk.yellow(`[RESUME] ${sessionLimit.length} session-limit cycle(s) will retry — no answer needed.`));
+      }
+    } else {
+      // Interactive per-cycle question flow
+      const TERM_WIDTH = Math.min(process.stdout.columns || 80, 100);
+      const SEP = chalk.dim("─".repeat(TERM_WIDTH - 2));
+
+      console.log("\n" + chalk.bold.cyan(`  ${needsInput.length} cycle${needsInput.length > 1 ? "s" : ""} waiting for your input\n`));
+
+      const cycleAnswerDir = path.join(process.cwd(), ".harness", "cycle-state");
+      const answersFile = path.join(cycleAnswerDir, "human-answers.json");
+
+      const decisions = [];
+
+      for (let i = 0; i < needsInput.length; i++) {
+        const c = needsInput[i];
+        console.log(SEP);
+        console.log(`\n  ${chalk.bold(`[${i + 1}/${needsInput.length}]`)} ${chalk.cyan(c.id)}  ${chalk.dim(`(${c.type})`)}\n`);
+
+        let questionText = c.blockedReason ?? "";
+        if (questionText.length < 350 && c.outputFile) {
+          try {
+            const cycleStatePath = path.join(process.cwd(), ".harness", "cycle-state", c.outputFile);
+            const data = JSON.parse(fs.readFileSync(cycleStatePath, "utf8"));
+            const gaps = (data.outOfScopeGaps ?? []);
+            if (gaps.length) {
+              const gapLines = gaps.map((g) => {
+                if (typeof g === "string") return `• ${g}`;
+                const parts = [`• ${g.gap ?? g.description ?? "(gap)"}`];
+                if (g.reason) parts.push(`  ${g.reason}`);
+                if (g.proposedModel) parts.push(`  Proposed:\n${g.proposedModel.split("\n").map((l) => "    " + l).join("\n")}`);
+                return parts.join("\n");
+              });
+              const suffix = "\n\nBlocking gaps:\n" + gapLines.join("\n\n");
+              questionText = questionText ? questionText + suffix : suffix.trim();
+            }
+          } catch { /* missing output file — use blockedReason as-is */ }
+        }
+
+        if (questionText) {
+          for (const line of questionText.split("\n")) {
+            if (line.trim() === "") { console.log(); continue; }
+            const indent = "  ";
+            const maxLen = TERM_WIDTH - indent.length;
+            const words = line.split(" ");
+            let current = "";
+            for (const word of words) {
+              if (!current) { current = word; continue; }
+              if (current.length + 1 + word.length <= maxLen) current += " " + word;
+              else { console.log(indent + current); current = word; }
+            }
+            if (current) console.log(indent + current);
+          }
+        } else {
+          console.log(chalk.dim("  (no question text recorded)"));
+        }
+
+        console.log();
+        const rl = createInterface({ input, output });
+        let userAnswer = "";
+        try {
+          userAnswer = (await rl.question(chalk.bold("  Your answer: "))).trim();
+        } finally {
+          rl.close();
+        }
+        console.log();
+
+        decisions.push({ cycleId: c.id, questions: questionText ? [{ text: questionText }] : [], answer: userAnswer });
+      }
+
+      // All cycles answered — write answers and update queue together before anything else
+      fs.mkdirSync(cycleAnswerDir, { recursive: true });
+      const existing = fs.existsSync(answersFile) ? JSON.parse(fs.readFileSync(answersFile, "utf8")) : [];
+      existing.push({
+        answeredAt: new Date().toISOString(),
+        resolvedCycles: needsInput.map((c) => c.id),
+        decisions,
+      });
+
+      // Mark blocked as pending in-memory first, then write both files
+      for (const c of blocked) {
+        c.status = "pending";
+        delete c.blockedType;
+        delete c.blockedReason;
+        delete c.blockedAt;
+      }
+      fs.writeFileSync(answersFile, JSON.stringify(existing, null, 2), "utf8");
+      fs.writeFileSync(queueFile, JSON.stringify(queue, null, 2), "utf8");
+
+      console.log(chalk.green(`  Answers saved for ${needsInput.length} cycle(s).`));
+      console.log(chalk.dim(`  Marked ${blocked.length} cycle(s) for retry.`));
+
+      if (sessionLimit.length) {
+        console.log(chalk.yellow(`\n  ${sessionLimit.length} session-limit cycle(s) will also retry — no answer needed.`));
+      }
+
+      // Ask whether to start the run
+      console.log();
+      const rlRun = createInterface({ input, output });
+      let startRun = "y";
+      try {
+        startRun = (await rlRun.question(chalk.bold("  Start run now? [Y/n]: "))).trim().toLowerCase() || "y";
+      } finally {
+        rlRun.close();
+      }
+      if (startRun === "n" || startRun === "no") {
+        console.log(chalk.dim("\n  Run skipped. Start manually with: cortex-harness run"));
+        return;
+      }
+      console.log();
+
+      const runPath = path.join(pkgRoot, "src", "run-autonomous.mjs");
+      const proc = spawn("node", [runPath], { stdio: "inherit", cwd: process.cwd() });
+      proc.on("exit", (code) => process.exit(code ?? 0));
+      return;
+    }
+
+    // Session-limit / no-blocked path — mark pending and auto-start
+    for (const c of blocked) {
+      c.status = "pending";
+      delete c.blockedType;
+      delete c.blockedReason;
+      delete c.blockedAt;
+    }
+    if (blocked.length) {
+      fs.writeFileSync(queueFile, JSON.stringify(queue, null, 2), "utf8");
+      console.log(chalk.dim(`\n  Marked ${blocked.length} cycle(s) for retry.`));
+    }
+
+    const runPath = path.join(pkgRoot, "src", "run-autonomous.mjs");
+    const proc = spawn("node", [runPath], { stdio: "inherit", cwd: process.cwd() });
+    proc.on("exit", (code) => process.exit(code ?? 0));
+  });
+
+// ─── notify-setup command ─────────────────────────────────────────────────────
+
+program
+  .command("notify-setup")
+  .description("Interactive wizard to configure notification channels (Windows toast, Discord webhook)")
+  .action(async () => {
+    const rl = createInterface({ input, output });
+
+    console.log("\n" + chalk.bold("Notification channel setup"));
+    console.log(chalk.dim(`Config file: ${NOTIFICATION_CONFIG_FILE}\n`));
+
+    const state = readNotificationConfig();
+    if (!state.valid) {
+      console.log(chalk.red(`  Existing config is invalid: ${state.error}`));
+      console.log(chalk.yellow("  It will be overwritten if you proceed.\n"));
+    }
+
+    const config = state.exists && state.valid ? state.config : createEmptyNotificationConfig();
+    let dirty = false;
+
+    // ── Windows ──────────────────────────────────────────────────────────────
+    const windowsEnabled = config.channels?.windows?.enabled;
+    if (process.platform === "win32") {
+      const current = windowsEnabled ? chalk.green("currently enabled") : chalk.dim("currently disabled");
+      const answer = await rl.question(`  Set up Windows toast notifications? (${current}) [y/N]: `);
+      if (answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes") {
+        console.log("  Sending test toast...");
+        const result = await sendWindowsNotification({ title: "Claude Harness", message: "Notification setup test" });
+        if (!result.ok) {
+          console.log(chalk.red(`  Toast failed: ${result.error}`));
+          console.log(chalk.yellow("  Windows notifications were NOT enabled.\n"));
+        } else {
+          config.channels.windows = { enabled: true };
+          dirty = true;
+          console.log(chalk.green("  ✓ Windows notifications enabled.\n"));
+        }
+      } else if (windowsEnabled) {
+        const disable = await rl.question("  Disable Windows notifications? [y/N]: ");
+        if (disable.trim().toLowerCase() === "y") {
+          config.channels.windows = { enabled: false };
+          dirty = true;
+          console.log(chalk.yellow("  Windows notifications disabled.\n"));
+        }
+      }
+    } else {
+      console.log(chalk.dim("  Windows notifications: not available on this platform.\n"));
+    }
+
+    // ── Discord ───────────────────────────────────────────────────────────────
+    const existing = getDiscordRegistrations(config);
+    if (existing.length) {
+      console.log("  Registered Discord channels:");
+      existing.forEach((r, i) =>
+        console.log(`    ${i + 1}. ${r.label ?? r.id} — ${r.enabled ? chalk.green("enabled") : chalk.dim("disabled")} (${redactWebhook(r.webhookUrl)})`)
+      );
+      console.log();
+    }
+
+    const addDiscord = await rl.question("  Add a Discord webhook channel? [y/N]: ");
+    if (addDiscord.trim().toLowerCase() === "y" || addDiscord.trim().toLowerCase() === "yes") {
+      const labelInput = await rl.question("  Display name for this channel (e.g. ops, alerts): ");
+      const label = labelInput.trim() || `discord-${Date.now().toString().slice(-4)}`;
+      const webhookInput = await rl.question("  Discord webhook URL: ");
+      const validation = validateDiscordWebhookUrl(webhookInput);
+      if (!validation.valid) {
+        console.log(chalk.red(`  Invalid URL: ${validation.error}`));
+        console.log(chalk.yellow("  Discord channel was NOT added.\n"));
+      } else {
+        console.log(`  Sending test message to ${label} (${redactWebhook(validation.webhookUrl)})...`);
+        try {
+          await sendDiscordNotification({
+            webhookUrl: validation.webhookUrl,
+            title: "Claude Harness",
+            message: "Notification setup test",
+            meta: { task: "Notification channel verification" },
+          });
+          const confirm = await rl.question("  Test message sent. Enable this channel? [y/N]: ");
+          if (confirm.trim().toLowerCase() === "y" || confirm.trim().toLowerCase() === "yes") {
+            const registrations = getDiscordRegistrations(config);
+            registrations.push({
+              id: `${label}-${registrations.length + 1}`,
+              label,
+              enabled: true,
+              webhookUrl: validation.webhookUrl,
+            });
+            config.channels.discord = registrations;
+            dirty = true;
+            console.log(chalk.green(`  ✓ Discord channel "${label}" added.\n`));
+          } else {
+            console.log(chalk.dim("  Discord channel not saved.\n"));
+          }
+        } catch (err) {
+          console.log(chalk.red(`  Discord test failed: ${err.message}`));
+          console.log(chalk.yellow("  Channel was NOT added.\n"));
+        }
+      }
+    }
+
+    rl.close();
+
+    if (dirty) {
+      writeNotificationConfig(config);
+      console.log(chalk.green(`\n  ✓ Config saved to ${NOTIFICATION_CONFIG_FILE}`));
+    } else {
+      console.log(chalk.dim("\n  No changes made."));
+    }
+
+    console.log(chalk.dim("\n  Run `cortex-harness notify list` to review registered channels."));
+    console.log(chalk.dim("  Run `cortex-harness notify-setup` again to add more channels.\n"));
+  });
+
+// ─── notify command ───────────────────────────────────────────────────────────
+
+program
+  .command("notify [subcommand] [channel]")
+  .description("Manage notification channels: register, test, list, unregister (see `notify help`)")
+  .allowUnknownOption()
+  .action((subcommand, channel) => {
+    const notifyCliPath = path.join(pkgRoot, "src", "notifications", "notify-cli.mjs");
+    const args = [notifyCliPath];
+    if (subcommand) args.push(subcommand);
+    if (channel) args.push(channel);
+
+    const proc = spawn("node", args, { stdio: "inherit", cwd: process.cwd() });
     proc.on("exit", (code) => process.exit(code ?? 0));
   });
 

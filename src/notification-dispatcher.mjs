@@ -33,7 +33,9 @@ export function dispatchNotification({ title, message, meta = {}, onWarning }) {
 
   // 1. Windows Notifications
   if (channels.windows?.enabled) {
-    sendWindowsNotification({ title, message, meta }).catch((err) => {
+    sendWindowsNotification({ title, message, meta }).then((result) => {
+      if (result && !result.ok) warn(`Windows notification failed: ${result.error}`, onWarning);
+    }).catch((err) => {
       warn(`Windows notification failed: ${err.message}`, onWarning);
     });
   }

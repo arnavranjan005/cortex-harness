@@ -11,7 +11,7 @@ function sanitize(value) {
 }
 
 export async function sendWindowsNotification({ title, message, meta = {} }) {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") return { ok: true };
 
   try {
     execFileSync("powershell.exe", [
@@ -21,8 +21,9 @@ export async function sendWindowsNotification({ title, message, meta = {} }) {
       "-Title", sanitize(title),
       "-Message", sanitize(message),
     ], { stdio: "ignore" });
+    return { ok: true };
   } catch (err) {
-    // ignore
+    return { ok: false, error: err.message };
   }
 }
 
