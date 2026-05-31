@@ -1067,7 +1067,7 @@ logsCmd.action(async (options) => {
       console.log(chalk.red(`  Run "${options.run}" not found.`));
       console.log(chalk.dim("  Available runs:"));
       for (const f of runFiles.slice(0, 10)) {
-        console.log(chalk.dim(`   ", f.replace(".jsonl", ""), "`));
+        console.log(chalk.dim(`   ${f.replace(".jsonl", "")}`));
       }
       if (runFiles.length > 10) console.log(chalk.dim(`   ... and ${runFiles.length - 10} more`));
       process.exit(1);
