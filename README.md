@@ -187,6 +187,37 @@ cortex-harness status
 
 Prints a live dashboard: blocked questions, partial cycles, pending queue, duration, and cost so far.
 
+### 6. View run logs
+
+```bash
+cortex-harness logs
+```
+
+Prints events from the most recent run in a readable, color-coded format:
+
+```
+[    1] ▶ RUN START   task: add a product listing page
+[    2] ◇ assistant   reading the existing page structure...
+[    3] ⚙ system      task_started task:abc123
+[    4] ◇ assistant   tool:Read
+[    5] ◇ user        {"content": "...file contents..."}
+[09:12:45] → CYCLE      explore
+[09:14:02] ← CYCLE END  explore ✓1
+[09:14:02] ■ RUN END    ✓ done:5  spent: $0.56
+```
+
+To view a specific run, pass its timestamp (filename without `.jsonl`):
+
+```bash
+cortex-harness logs --run 2026-05-31T09-59-22
+```
+
+To scroll through a long run:
+
+```bash
+cortex-harness logs | less -R
+```
+
 ---
 
 ## Gitignore patching for existing projects

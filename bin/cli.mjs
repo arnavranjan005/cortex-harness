@@ -1092,7 +1092,9 @@ logsCmd.action(async (options) => {
     try {
       const ev = JSON.parse(line);
       const t = ev.timestamp ?? ev.ts ?? "";
-      const ts = t ? chalk.dim("[" + t.slice(11, 19) + "] ") : chalk.dim("[           ] ");
+      const ts = t
+        ? chalk.dim("[" + t.slice(11, 19) + "] ")
+        : chalk.dim("[" + String(count + 1).padStart(5) + "] ");
 
       if (ev.type === "harness") {
         if (ev.event === "run-start") {
@@ -1105,7 +1107,7 @@ logsCmd.action(async (options) => {
           ].filter(Boolean).join("  ");
           console.log(ts + chalk.red("■ RUN END    "), summary);
           if (ev.totalSpentUsd !== undefined) {
-            console.log(chalk.dim("             spent: $" + ev.totalSpentUsd.toFixed(2)));
+            console.log(chalk.dim("              spent: $" + ev.totalSpentUsd.toFixed(2)));
           }
         } else if (ev.event === "fatal") {
           console.log(ts + chalk.red("✗ FATAL     "), ev.error ?? "");
@@ -1118,7 +1120,7 @@ logsCmd.action(async (options) => {
             chalk.green(" ✓" + ok), fail > 0 ? chalk.red(" ⊘" + fail) : "",
             ev.partial ? chalk.yellow(" ~" + ev.partial) : "");
           if (ev.totalSpentUsd !== undefined) {
-            console.log(chalk.dim("             spent: $" + ev.totalSpentUsd.toFixed(2)));
+            console.log(chalk.dim("              spent: $" + ev.totalSpentUsd.toFixed(2)));
           }
         } else if (ev.event === "rate_limit") {
           console.log(ts + chalk.yellow("⚠ RATE LIMIT"), ev.service ?? "", ev.resetsAt ? "resets " + ev.resetsAt.slice(11, 16) : "");
@@ -1128,30 +1130,58 @@ logsCmd.action(async (options) => {
       } else if (ev.type === "agent_message" || ev.type === "message") {
         const role = ev.role ?? ev.agent ?? "?";
         const content = typeof ev.content === "string"
-          ? ev.content.slice(0, 120)
-          : JSON.stringify(ev.content ?? "").slice(0, 120);
-        console.log(ts + chalk.cyan("◇ " + role.padEnd(10)), chalk.dim(content.slice(0, 80)));
+          ? ev.content
+          : JSON.stringify(ev.content ?? "");
+        console.log(ts + chalk.cyan("◇ " + role.padEnd(10)), chalk.dim(content.slice(0, 120)));
       } else if (ev.type === "tool-call" || ev.type === "tool") {
-        console.log(ts + chalk.magenta("⚙ TOOL CALL "), (ev.tool ?? ev.function ?? "").slice(0, 60));
+        console.log(ts + chalk.magenta("⚙ TOOL CALL "), (ev.tool ?? ev.function ?? ""));
       } else if (ev.type === "tool-result" || ev.type === "tool_result") {
         const ok = ev.success !== false;
-        const preview = typeof ev.result === "string" ? ev.result.slice(0, 80) : JSON.stringify(ev.result ?? "").slice(0, 80);
-        console.log(ts + (ok ? chalk.green("✓ TOOL OK   ") : chalk.red("✗ TOOL FAIL ")), chalk.dim(preview));
+        const preview = typeof ev.result === "string" ? ev.result : JSON.stringify(ev.result ?? "");
+        console.log(ts + (ok ? chalk.green("✓ TOOL OK   ") : chalk.red("✗ TOOL FAIL ")), chalk.dim(preview.slice(0, 120)));
       } else if (ev.type === "notification-warning") {
-        console.log(ts + chalk.yellow("⚠ NOTIFY WARN"), (ev.warning ?? "").slice(0, 80));
+        console.log(ts + chalk.yellow("⚠ NOTIFY WARN"), (ev.warning ?? ""));
       } else if (ev.type === "error") {
-        console.log(ts + chalk.red("✗ ERROR      "), (ev.message ?? JSON.stringify(ev)).slice(0, 80));
+        console.log(ts + chalk.red("✗ ERROR      "), (ev.message ?? JSON.stringify(ev)));
       } else if (ev.raw) {
-        // raw LLM output lines
-        console.log(ts + chalk.dim("○ raw       "), (ev.raw ?? "").slice(0, 100));
+        // parse raw Claude SDK stream events for useful info
+        try {
+          const raw = typeof ev.raw === "string" ? JSON.parse(ev.raw) : ev.raw;
+          const rawType = raw.type ?? raw.subtype ?? "raw";
+          if (raw.type === "assistant" && raw.message) {
+            const msg = raw.message;
+            const firstText = msg.content?.find(b => b.type === "text")?.text ?? "";
+            const firstTool = msg.content?.find(b => b.type === "tool_use")?.name ?? "";
+            const preview = firstText || (firstTool ? "tool:" + firstTool : "");
+            console.log(ts + chalk.dim("◇ assistant "), chalk.dim(preview.slice(0, 120)));
+          } else if (raw.type === "user" && raw.message) {
+            const content = raw.message.content;
+            const toolResult = Array.isArray(content) ? content.find(b => b.type === "tool_result") : null;
+            const preview = toolResult
+              ? (typeof toolResult.content === "string" ? toolResult.content : JSON.stringify(toolResult.content)).slice(0, 120)
+              : JSON.stringify(content ?? "").slice(0, 120);
+            console.log(ts + chalk.dim("◇ user      "), chalk.dim(preview));
+          } else if (raw.type === "system") {
+            console.log(ts + chalk.dim("⚙ system    "), chalk.dim((raw.subtype ?? "") + (raw.task_id ? " task:" + raw.task_id : "")));
+          } else if (raw.type === "result") {
+            const spent = raw.cost_usd !== undefined ? " $" + Number(raw.cost_usd).toFixed(3) : "";
+            console.log(ts + chalk.dim("■ result    "), chalk.dim((raw.subtype ?? "") + spent));
+          } else if (raw.type === "rate_limit_event") {
+            console.log(ts + chalk.yellow("⚠ rate limit"), chalk.dim(raw.rate_limit_info?.status ?? ""));
+          } else {
+            console.log(ts + chalk.dim("○ " + rawType.padEnd(10)), chalk.dim(JSON.stringify(raw).slice(0, 120)));
+          }
+        } catch {
+          console.log(ts + chalk.dim("○ raw       "), chalk.dim(String(ev.raw).slice(0, 120)));
+        }
       } else {
         // fallback: show type + key fields
         const summary = Object.entries(ev)
           .filter(([k]) => !["type", "timestamp", "ts"].includes(k))
           .slice(0, 3)
-          .map(([k, v]) => k + ":" + (typeof v === "string" ? v.slice(0, 40) : JSON.stringify(v).slice(0, 40)))
+          .map(([k, v]) => k + ":" + (typeof v === "string" ? v : JSON.stringify(v).slice(0, 60)))
           .join(" | ");
-        console.log(ts + chalk.dim("? " + (ev.type ?? "unknown") + " | " + summary.slice(0, 80)));
+        console.log(ts + chalk.dim("? " + (ev.type ?? "unknown") + " | " + summary.slice(0, 120)));
       }
       count++;
     } catch {
