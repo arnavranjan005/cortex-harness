@@ -91,6 +91,7 @@ function fileIcon(status) {
 async function copyFile(src, dest, rel, rl) {
   const exists = await fs.pathExists(dest);
   if (exists) {
+    if (!process.stdin.isTTY) return "kept";
     const answer = await rl.question(
       `  ${chalk.yellow("?")} ${chalk.dim(rel)} already exists — update? ${chalk.dim("[y/N]")}: `
     );
@@ -183,6 +184,17 @@ async function detectSurfaces(cwd) {
 async function confirmSurfaces(detected, rl) {
   const isNx = detected !== null;
   const d = detected ?? {};
+
+  if (!process.stdin.isTTY) {
+    return {
+      backend:      d.backend      ?? [],
+      frontend:     d.frontend     ?? [],
+      distributed:  d.distributed  ?? [],
+      sharedSchema: d.sharedSchema ?? [],
+      sharedTypes:  d.sharedTypes  ?? [],
+      sharedUi:     d.sharedUi     ?? [],
+    };
+  }
 
   function fmt(paths) {
     return paths && paths.length ? paths.join(", ") : "";
