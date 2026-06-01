@@ -84,3 +84,39 @@ test('run with no task and no queue exits non-zero', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('logs shows run name without .jsonl extension in error path', () => {
+  const dir = makeTmpDir();
+  try {
+    // Create .harness/runs/ with a sample jsonl file
+    const runsDir = join(dir, '.harness', 'runs');
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, '20260101-120000.jsonl'), JSON.stringify({ type: 'harness', event: 'run-start', task: 'test' }) + '\n');
+
+    const result = spawnSync('node', [CLI, 'logs', '--run', 'nonexistent'], { cwd: dir, encoding: 'utf8' });
+    // Should exit non-zero (run not found)
+    assert.notEqual(result.status, 0, 'should exit non-zero for nonexistent run');
+    // Should list available runs without .jsonl extension
+    assert.ok(result.stdout.includes('20260101-120000'), 'should show run name without .jsonl extension');
+    assert.ok(!result.stdout.includes('.jsonl'), 'should not leak .jsonl extension in available runs list');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('logs prints events from a run log', () => {
+  const dir = makeTmpDir();
+  try {
+    const runsDir = join(dir, '.harness', 'runs');
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, '20260101-120000.jsonl'), JSON.stringify({ type: 'harness', event: 'run-start', task: 'test task', timestamp: '2026-01-01T12:00:00.000Z' }) + '\n');
+
+    const result = spawnSync('node', [CLI, 'logs', '--run', '20260101-120000'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(result.status, 0, `logs should succeed: ${result.stderr}`);
+    assert.ok(result.stdout.includes('RUN START'), 'should show run-start event');
+    assert.ok(result.stdout.includes('test task'), 'should show task name');
+    assert.ok(!result.stdout.includes('.jsonl'), 'should not show .jsonl in output');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
