@@ -9,7 +9,7 @@ HARD STOP — the following are FORBIDDEN in this cycle, no exceptions:
 - Do NOT implement, fix, or change any code.
 Violating any of the above means you have failed this cycle. The only tools you may use are: Read, Write (for .harness/ files only), Skill, Glob, Grep.
 
-## Your job — 8 steps, then stop
+## Your job — 9 steps, then stop
 
 1. Read CLAUDE.md fully — understand the routing table, sub-agent ownership, reconciliation protocol.
 
@@ -21,22 +21,27 @@ Violating any of the above means you have failed this cycle. The only tools you 
    - If no skills match: write { "invoked": [], "output": {} } — marks Step 0 complete, not skipped
    Implement cycles will read this file as their ## Skill guidance — do not leave it unwritten.
 
-3. Route the task to the correct prompt type using the routing table in CLAUDE.md:
+3. Pre-process the task text before routing:
+   - Tasks often start with pasted context before the actual instructions: JSON error objects, stack traces, log lines, HTTP responses, code snippets, or any other raw output.
+   - Scan the full text for human instruction verbs (fix, add, change, update, remove, make, solve, implement, etc.) — these mark where the real task begins.
+   - Use those instructions as the routing input. Treat everything before them as supporting context (error details, reproduction steps, etc.).
+   - If there are no instruction verbs anywhere → route as fix-bug, treating the entire pasted content as the bug description.
+
+4. Route the task to the correct prompt type using the routing table in CLAUDE.md:
    - "add", "implement", "I need X" on existing code → implement-feature
    - "fix", "broken", "error", wrong output → fix-bug
    - "change", "update", "modify" existing behavior → edit-feature
    - "create from scratch", greenfield → create-app
 
-4. Disambiguate if signals conflict — check in order, stop at the first match:
+5. Disambiguate if signals conflict — check in order, stop at the first match:
    - Wrong/unexpected behavior described but no error thrown → fix-bug (wrong behavior IS a bug)
    - "Change X" / "Update X" but X does not exist in the codebase → implement-feature
    - "Add X" but it clearly removes or replaces existing behavior → edit-feature
-   - Task is ambiguous after applying the rules above →
-     NEEDS_HUMAN_INPUT: ask exactly one question to resolve it (e.g. "Is the current behavior intentional?")
-     Do not guess. Do not proceed until the ambiguity is resolved.
-   If none of the above apply, the routed type from Step 3 stands — proceed.
+   - Task has multiple distinct verb clusters (fix + add + change) → multi-intent (see Step 6)
+   - If ambiguity cannot be resolved by any rule above: make a best-guess routing decision. Do NOT emit NEEDS_HUMAN_INPUT for routing ambiguity — only emit it for hard blocks (Prisma schema change, auth/JWT/CORS/CSRF, or a decision that requires human approval of a destructive action).
+   If none of the above apply, the routed type from Step 4 stands — proceed.
 
-5. Multi-intent check — does the task contain multiple distinct verb clusters?
+6. Multi-intent check — does the task contain multiple distinct verb clusters?
    Look for combinations of: (fix|broken|error) AND (add|implement|create) AND/OR (change|update|modify|edit)
    A task with only one verb cluster, even if long, is single-intent — do NOT split.
 
@@ -44,10 +49,10 @@ Violating any of the above means you have failed this cycle. The only tools you 
      a. Identify each distinct intent and extract its minimal sub-task text
      b. Order sub-tasks: fix → edit → implement/create
         Reason: fixes restore correct state first; edits modify on top of fixes; creates add new behavior last
-     c. Route each sub-task to the correct promptType using Step 3 rules
+     c. Route each sub-task to the correct promptType using Step 4 rules
      d. Assign each a short slug — max 3 kebab-case words, derived from the intent verb + key noun
         (e.g. "fix-login", "edit-dropdown", "create-invoice") — NOT the full sub-task text
-     e. Read each sub-task's prompt file: .harness/prompts/<type>.md (one Read call per intent type — counted as Step 6 for multi-intent tasks)
+     e. Read each sub-task's prompt file: .harness/prompts/<type>.md (one Read call per intent type — counted as Step 7 for multi-intent tasks)
      f. Shared explore (default): if intents may touch overlapping surfaces, emit ONE explore cycle
         with no taskGroup and outputFile: "explore.json" — all groups fall back to it automatically.
         Per-group explore: only if the task description makes it clear the intents are on completely
@@ -65,18 +70,18 @@ Violating any of the above means you have failed this cycle. The only tools you 
      l. Set promptType: "multi-intent" and write intents[] in task-queue.json
      m. skills.json is written once (Step 2) and shared — no group suffix
 
-   If NO — taskGroup is omitted from all cycles. Proceed to Step 6.
+   If NO — taskGroup is omitted from all cycles. Proceed to Step 7.
 
-6. Read the matching prompt file with the Read tool:
+7. Read the matching prompt file with the Read tool:
    - Single intent: .harness/prompts/<type>.md
-   - Multi-intent: already done in Step 5e — proceed to Step 7
+   - Multi-intent: already done in Step 6e — proceed to Step 8
 
-7. Map that prompt file's steps to cycles. The cycle sequence MUST mirror the prompt's step order.
+8. Map that prompt file's steps to cycles. The cycle sequence MUST mirror the prompt's step order.
    - implement-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
    - fix-bug: reproduce → explore (if needed) → implement-* → test → reconcile → deliver
    - edit-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
 
-8. Write the complete cycle plan to: .harness/task-queue.json
+9. Write the complete cycle plan to: .harness/task-queue.json
 
 ## task-queue.json schema
 

@@ -23,6 +23,7 @@ import {
 } from "./cycle-schemas.mjs";
 import { dispatchNotification } from "./notification-dispatcher.mjs";
 import { loadConfig } from "./config-loader.mjs";
+import { createSnapshotManager } from "./snapshot.mjs";
 
 // ── Load Config ──────────────────────────────────────────────────────────────
 const config = await loadConfig();
@@ -90,6 +91,7 @@ const CYCLE_DIR = join(HARNESS_DIR, "cycle-state");
 const OUTPUT_DIR = join(HARNESS_DIR, "output");
 const SESSION_FILE = join(HARNESS_DIR, "session.json");
 const QUEUE_FILE = join(HARNESS_DIR, "task-queue.json");
+const SNAPSHOT_DIR = join(HARNESS_DIR, "pre-run-snapshot");
 
 // Relative path for use inside cycle prompts (Claude writes files relative to cwd)
 const CYCLE_STATE_RELDIR = relative(ROOT, CYCLE_DIR).replace(/\\/g, "/");
@@ -204,7 +206,12 @@ function checkAndRevertScopeViolations(cycle) {
     }
 
     if (done) {
-      console.log(`    ${chalk.green("✗")} reverted: ${chalk.dim(f)}`);
+      // Restore pre-run (or last in-scope) content if snapshot has it,
+      // so uncommitted work that predates this cycle is not lost
+      const restored = restoreFromSnapshot(f);
+      console.log(
+        `    ${chalk.green("✗")} reverted: ${chalk.dim(f)}${restored ? chalk.dim(" (pre-run content restored from snapshot)") : ""}`,
+      );
       reverted.push(f);
     } else {
       console.log(`    ${chalk.red("!")} could not revert: ${chalk.red(f)}`);
@@ -246,6 +253,9 @@ function checkAndRevertScopeViolations(cycle) {
 
   return failed.length ? failed : undefined;
 }
+
+// ── Pre-run snapshot (see src/snapshot.mjs) ───────────────────────────────────
+// Instantiated after readCycleState is defined below (line ~736).
 
 // ── Auto-scope update ─────────────────────────────────────────────────────────
 // When an agent ran unconstrained (scope = []), detect the directories it created
@@ -523,6 +533,10 @@ if (!userTask) {
           }
         }
       }
+      // Clear session.json so chained runs start with a clean session history
+      try {
+        if (existsSync(SESSION_FILE)) unlinkSync(SESSION_FILE);
+      } catch { /* ignore */ }
     }
   } catch {
     /* queue not found or invalid — fresh run, nothing to clear */
@@ -539,12 +553,16 @@ if (!userTask) {
 mkdirSync(RUNS_DIR, { recursive: true });
 mkdirSync(CYCLE_DIR, { recursive: true });
 mkdirSync(OUTPUT_DIR, { recursive: true });
+mkdirSync(SNAPSHOT_DIR, { recursive: true });
 
 const runTimestamp = new Date()
   .toISOString()
   .replace(/[:.]/g, "-")
   .slice(0, 19);
 const runLogFile = join(RUNS_DIR, `${runTimestamp}.jsonl`);
+
+// Snapshot uncommitted working-tree state before any cycle runs
+createPreRunSnapshot();
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -614,6 +632,16 @@ function readCycleState(filename) {
     return null;
   }
 }
+
+const { createPreRunSnapshot, refreshSnapshot, restoreFromSnapshot } =
+  createSnapshotManager({
+    snapshotDir: SNAPSHOT_DIR,
+    root: ROOT,
+    configuredAgents: CONFIGURED_AGENTS,
+    readCycleState,
+    chalk,
+    execSync,
+  });
 
 function readAgentMd(agentName) {
   const p = join(AGENTS_DIR, `${agentName}.agent.md`);
@@ -1112,7 +1140,13 @@ async function runCycle(cycle, remainingBudgetUsd) {
     }
 
     function detectSignal(message, code) {
-      if (message.includes("NEEDS_HUMAN_INPUT")) return "needs-human";
+      // Match signals only on the last non-empty line — agents are instructed to end
+      // their final message with exactly one signal. Using .includes() would false-positive
+      // on signal strings that appear inside quoted JSON output bodies.
+      const lastLine = message.trimEnd().split("\n").findLast((l) => l.trim()) ?? "";
+      const lastLineTrimmed = lastLine.trim();
+
+      if (lastLineTrimmed.startsWith("NEEDS_HUMAN_INPUT")) return "needs-human";
       if (isSessionLimitMessage(message)) {
         appendLog({
           type: "harness",
@@ -1139,6 +1173,9 @@ async function runCycle(cycle, remainingBudgetUsd) {
         );
         return "partial";
       }
+      if (lastLineTrimmed === "CYCLE_COMPLETE") return "complete";
+      if (lastLineTrimmed.startsWith("CYCLE_PARTIAL:")) return "partial";
+      // Fallbacks for older outputs or truncated streams
       if (message.includes("CYCLE_COMPLETE")) return "complete";
       if (message.match(/CYCLE_PARTIAL:/)) return "partial";
       if (code === 0) return "complete";
@@ -1839,6 +1876,10 @@ async function main() {
 
           // If agent ran unconstrained (scope=[]), record what it created and lock it in
           autoUpdateScope(cycle);
+
+          // Refresh snapshot for in-scope files so their valid edits are preserved
+          // if a later cycle violates scope on the same file
+          refreshSnapshot(cycle);
 
           // Scope guard: revert any files the agent touched outside its declared scope
           const unrevertable = checkAndRevertScopeViolations(cycle);
