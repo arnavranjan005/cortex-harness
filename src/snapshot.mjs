@@ -130,14 +130,15 @@ export function createSnapshotManager({
   }
 
   function restoreFromSnapshot(filePath) {
+    const normalized = filePath.replace(/\\/g, "/");
     const index = readIndex();
-    const entry = index[filePath] ?? index[filePath.replace(/\\/g, "/")];
+    const entry = index[normalized] ?? index[filePath];
     if (!entry) return false;
     const blob = join(snapshotDir, entry.blobFile);
     if (!existsSync(blob)) return false;
     try {
       const content = readFileSync(blob); // Buffer — byte-perfect
-      writeFileSync(join(root, filePath), content);
+      writeFileSync(join(root, normalized), content); // normalized so Linux join works correctly
       return true;
     } catch {
       return false;
