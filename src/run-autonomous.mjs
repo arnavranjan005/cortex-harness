@@ -561,8 +561,6 @@ const runTimestamp = new Date()
   .slice(0, 19);
 const runLogFile = join(RUNS_DIR, `${runTimestamp}.jsonl`);
 
-// Snapshot uncommitted working-tree state before any cycle runs
-createPreRunSnapshot();
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -642,6 +640,9 @@ const { createPreRunSnapshot, refreshSnapshot, restoreFromSnapshot } =
     chalk,
     execSync,
   });
+
+// Snapshot uncommitted working-tree state before any cycle runs
+createPreRunSnapshot();
 
 function readAgentMd(agentName) {
   const p = join(AGENTS_DIR, `${agentName}.agent.md`);
