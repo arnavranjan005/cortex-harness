@@ -1,5 +1,3 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
 import {
   validateCycleOutput,
   validateTaskQueue,
@@ -16,15 +14,15 @@ test('validates a valid test.json', () => {
     failures: [],
     failedSurfaces: [],
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('rejects test.json missing required passed field', () => {
   const result = validateCycleOutput('test.json', {
     targetsRun: [],
   });
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.some(e => e.includes('passed')));
+  expect(result.valid).toBe(false);
+  expect(result.errors.some(e => e.includes('passed'))).toBe(true);
 });
 
 test('validates a valid implement report', () => {
@@ -33,7 +31,7 @@ test('validates a valid implement report', () => {
     outOfScopeGaps: [],
     notes: 'done',
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('accepts mixed string/object filesChanged', () => {
@@ -41,13 +39,13 @@ test('accepts mixed string/object filesChanged', () => {
     filesChanged: ['web/src/page.tsx', { path: 'web/src/comp.tsx' }],
     outOfScopeGaps: [],
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('skips unknown output files', () => {
   const result = validateCycleOutput('unknown-file.json', { anything: true });
-  assert.equal(result.valid, true);
-  assert.equal(result.skipped, true);
+  expect(result.valid).toBe(true);
+  expect(result.skipped).toBe(true);
 });
 
 test('validates explore.json loosely (passthrough)', () => {
@@ -56,7 +54,7 @@ test('validates explore.json loosely (passthrough)', () => {
     findings: ['api/', 'web/'],
     summary: 'two surfaces found',
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('validates reconcile.json', () => {
@@ -66,7 +64,7 @@ test('validates reconcile.json', () => {
     consistencyPassed: true,
     residualRisks: [],
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('accepts object residualRisks entries in reconcile.json', () => {
@@ -76,7 +74,7 @@ test('accepts object residualRisks entries in reconcile.json', () => {
     consistencyPassed: false,
     residualRisks: [{ id: 'R-1', description: 'prisma change needed' }],
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 // ── validateTaskQueue ─────────────────────────────────────────────────────────
@@ -90,7 +88,7 @@ test('validates a minimal valid task queue', () => {
       { id: 'deliver', type: 'deliver', status: 'pending' },
     ],
   });
-  assert.equal(result.valid, true);
+  expect(result.valid).toBe(true);
 });
 
 test('rejects task queue with unknown promptType', () => {
@@ -99,7 +97,7 @@ test('rejects task queue with unknown promptType', () => {
     promptType: 'unknown-type',
     cycles: [],
   });
-  assert.equal(result.valid, false);
+  expect(result.valid).toBe(false);
 });
 
 test('rejects task queue missing task field', () => {
@@ -107,16 +105,16 @@ test('rejects task queue missing task field', () => {
     promptType: 'fix-bug',
     cycles: [],
   });
-  assert.equal(result.valid, false);
+  expect(result.valid).toBe(false);
 });
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 test('test.json is in CRITICAL_OUTPUT_FILES', () => {
-  assert.ok(CRITICAL_OUTPUT_FILES.has('test.json'));
+  expect(CRITICAL_OUTPUT_FILES.has('test.json')).toBe(true);
 });
 
 test('CONSERVATIVE_DEFAULTS for test.json sets passed: false', () => {
-  assert.equal(CONSERVATIVE_DEFAULTS['test.json'].passed, false);
-  assert.ok(Array.isArray(CONSERVATIVE_DEFAULTS['test.json'].targetsRun));
+  expect(CONSERVATIVE_DEFAULTS['test.json'].passed).toBe(false);
+  expect(Array.isArray(CONSERVATIVE_DEFAULTS['test.json'].targetsRun)).toBe(true);
 });

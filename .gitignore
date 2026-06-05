@@ -10,3 +10,6 @@ node_modules/
 
 # Temp prompt/script files written by the engine during cycles
 *.ps1
+
+# Temp directory created by buildChainTask in bin/cli.mjs
+.tmp-extract/

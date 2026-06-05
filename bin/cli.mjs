@@ -45,6 +45,9 @@ const GITIGNORE_RUNTIME_ENTRIES = [
   ".harness/cycle-state/",
   ".harness/output/",
   ".harness/session.json",
+  ".harness/task-queue.json",
+  ".harness/sessions/",
+  ".harness/pre-run-snapshot/",
   ".harness/notification-channels.local.json",
 ];
 

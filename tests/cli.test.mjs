@@ -2,8 +2,6 @@
  * Smoke tests for the CLI — verifies init scaffolds expected files
  * and run/resume commands spawn without crashing.
  */
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -22,33 +20,32 @@ function makeTmpDir() {
 
 test('--help exits 0 and shows commands', () => {
   const result = spawnSync('node', [CLI, '--help'], { encoding: 'utf8' });
-  assert.equal(result.status, 0, `Expected exit 0, got ${result.status}\n${result.stderr}`);
-  assert.ok(result.stdout.includes('init'), 'should list init command');
-  assert.ok(result.stdout.includes('run'), 'should list run command');
-  assert.ok(result.stdout.includes('resume'), 'should list resume command');
-  assert.ok(result.stdout.includes('notify-setup'), 'should list notify-setup command');
-  assert.ok(result.stdout.includes('notify'), 'should list notify command');
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('init');
+  expect(result.stdout).toContain('run');
+  expect(result.stdout).toContain('resume');
+  expect(result.stdout).toContain('notify-setup');
+  expect(result.stdout).toContain('notify');
 });
 
 test('init scaffolds .harness/ directory with prompts and agents', () => {
   const dir = makeTmpDir();
-  // Init needs a git repo for sync-memory (ignore errors from git)
   try { execSync('git init', { cwd: dir, stdio: 'ignore' }); } catch { /* ok */ }
 
   try {
     const result = spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
-    assert.equal(result.status, 0, `init failed:\n${result.stderr}`);
+    expect(result.status).toBe(0);
 
-    assert.ok(existsSync(join(dir, '.harness')), '.harness/ should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'prompts')), '.harness/prompts/ should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'agents')), '.harness/agents/ should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'orchestrate.md')), 'orchestrate.md should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'implement.md')), 'implement.md should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'prompts', 'test.md')), 'test.md should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'agents', 'backend-subagent.agent.md')), 'backend agent should exist');
-    assert.ok(existsSync(join(dir, '.harness', 'agents', 'tester-subagent.agent.md')), 'tester agent should exist');
-    assert.ok(existsSync(join(dir, 'harness.config.json')), 'harness.config.json should be created');
-    assert.ok(existsSync(join(dir, 'CLAUDE.md')), 'CLAUDE.md should be created');
+    expect(existsSync(join(dir, '.harness'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'prompts'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'agents'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'prompts', 'orchestrate.md'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'prompts', 'implement.md'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'prompts', 'test.md'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'agents', 'backend-subagent.agent.md'))).toBe(true);
+    expect(existsSync(join(dir, '.harness', 'agents', 'tester-subagent.agent.md'))).toBe(true);
+    expect(existsSync(join(dir, 'harness.config.json'))).toBe(true);
+    expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -65,7 +62,7 @@ test('init skips harness.config.json if it already exists', () => {
   try {
     spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
     const after = readFileSync(configPath, 'utf8');
-    assert.equal(after, original, 'existing harness.config.json should not be overwritten');
+    expect(after).toBe(original);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -73,13 +70,12 @@ test('init skips harness.config.json if it already exists', () => {
 
 test('run with no task and no queue exits non-zero', () => {
   const dir = makeTmpDir();
-  // Init so config exists
   try { execSync('git init', { cwd: dir, stdio: 'ignore' }); } catch { /* ok */ }
   spawnSync('node', [CLI, 'init'], { cwd: dir, encoding: 'utf8' });
 
   try {
     const result = spawnSync('node', [CLI, 'run'], { cwd: dir, encoding: 'utf8', timeout: 10_000 });
-    assert.notEqual(result.status, 0, 'run with no task should fail');
+    expect(result.status).not.toBe(0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -88,17 +84,14 @@ test('run with no task and no queue exits non-zero', () => {
 test('logs shows run name without .jsonl extension in error path', () => {
   const dir = makeTmpDir();
   try {
-    // Create .harness/runs/ with a sample jsonl file
     const runsDir = join(dir, '.harness', 'runs');
     mkdirSync(runsDir, { recursive: true });
     writeFileSync(join(runsDir, '20260101-120000.jsonl'), JSON.stringify({ type: 'harness', event: 'run-start', task: 'test' }) + '\n');
 
     const result = spawnSync('node', [CLI, 'logs', '--run', 'nonexistent'], { cwd: dir, encoding: 'utf8' });
-    // Should exit non-zero (run not found)
-    assert.notEqual(result.status, 0, 'should exit non-zero for nonexistent run');
-    // Should list available runs without .jsonl extension
-    assert.ok(result.stdout.includes('20260101-120000'), 'should show run name without .jsonl extension');
-    assert.ok(!result.stdout.includes('.jsonl'), 'should not leak .jsonl extension in available runs list');
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('20260101-120000');
+    expect(result.stdout).not.toContain('.jsonl');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -112,10 +105,10 @@ test('logs prints events from a run log', () => {
     writeFileSync(join(runsDir, '20260101-120000.jsonl'), JSON.stringify({ type: 'harness', event: 'run-start', task: 'test task', timestamp: '2026-01-01T12:00:00.000Z' }) + '\n');
 
     const result = spawnSync('node', [CLI, 'logs', '--run', '20260101-120000'], { cwd: dir, encoding: 'utf8' });
-    assert.equal(result.status, 0, `logs should succeed: ${result.stderr}`);
-    assert.ok(result.stdout.includes('RUN START'), 'should show run-start event');
-    assert.ok(result.stdout.includes('test task'), 'should show task name');
-    assert.ok(!result.stdout.includes('.jsonl'), 'should not show .jsonl in output');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('RUN START');
+    expect(result.stdout).toContain('test task');
+    expect(result.stdout).not.toContain('.jsonl');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
