@@ -41,7 +41,7 @@ export function createSnapshotManager({
 
   function blobPath(filePath) {
     const sanitized = filePath.replace(/[/\\:*?"<>|]/g, "_");
-    return join(snapshotDir, sanitized);
+    return join(snapshotDir, `blob-${sanitized}`);
   }
 
   function captureFiles(filePaths) {
@@ -87,6 +87,10 @@ export function createSnapshotManager({
     } catch {
       return;
     }
+    if (!dirty.length) return;
+    // Exclude the snapshot dir itself — its blobs are harness internals, not user files
+    const snapshotRelDir = relative(root, snapshotDir).replace(/\\/g, "/");
+    dirty = dirty.filter((f) => !f.replace(/\\/g, "/").startsWith(snapshotRelDir + "/"));
     if (!dirty.length) return;
     captureFiles(dirty);
     console.log(
