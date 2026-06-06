@@ -194,6 +194,18 @@ If the cascade cannot fully revert a file, a `scope-cleanup-<cycleId>` reconcile
 
 ---
 
+## Pre-Run Snapshot & Recovery
+
+The revert cascade above is necessary but blunt — `git restore` / `git clean` wipe a file back to `HEAD`, which would also destroy any uncommitted work the user (or a prior run) had in that file before Cortex started. `src/snapshot.mjs` exists to make reverts non-destructive:
+
+1. **`createPreRunSnapshot()`** — runs once, before any cycle starts. Captures every uncommitted file (`git diff --name-only HEAD` + `git ls-files --others --exclude-standard`) as a byte-perfect `Buffer` blob under `.harness/pre-run-snapshot/`, indexed in `snapshot.json`. The snapshot directory itself is excluded from capture so it never snapshots its own blobs on subsequent runs, and blob filenames are prefixed with `blob-` so they stay visually distinct from real files.
+2. **`refreshSnapshot(cycle)`** — runs after **every** cycle that completes successfully and has an assigned agent (not just `implement-*` cycles — reconcile, fix, and other cycle types can produce valid in-scope edits too). It reads the cycle's report, filters `filesChanged[]` down to paths inside that agent's configured scope, and re-captures just those files. This means the snapshot always reflects the latest *valid* in-scope state, not just the pre-run state.
+3. **`restoreFromSnapshot(filePath)`** — called by the scope-revert cascade (see above) instead of leaving a file at bare `HEAD`. If a blob exists for the file, its content is written back byte-for-byte; otherwise the cascade's normal git-based revert stands.
+
+Net effect: an out-of-scope write is reverted to the most recent *known-good* content for that file — either the user's pre-run uncommitted work, or the latest valid in-scope edit from an earlier cycle in the same run — rather than to whatever `HEAD` happens to contain.
+
+---
+
 ## Auto-Scope Update
 
 When an implement cycle completes with `scope: []` (unconstrained), the harness automatically detects the paths created and writes them back to `harness.config.json`, locking them in for all future cycles in the same run.

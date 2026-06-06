@@ -234,7 +234,9 @@ This appends the harness runtime entries to `.gitignore` (idempotent — safe to
 
 ## Scope Enforcement & Auto-Update
 
-Each agent is bound to its declared scope paths. After every implement cycle, Cortex compares changed files against those paths. Out-of-scope writes are automatically reverted via a 4-step git cascade.
+Each agent is bound to its declared scope paths. After every cycle, Cortex compares changed files against those paths. Out-of-scope writes are automatically reverted via a 4-step git cascade.
+
+Reverts are non-destructive: a pre-run snapshot captures uncommitted work before the run starts and is refreshed with each cycle's valid in-scope edits, so a revert restores the latest known-good content for a file rather than wiping it back to bare `HEAD`. See [ARCHITECTURE.md → Pre-Run Snapshot & Recovery](./ARCHITECTURE.md#pre-run-snapshot--recovery) for details.
 
 **New project with no scopes configured?** Set all agent scopes to `[]` and run. Cortex detects the paths your agents create, locks them into `harness.config.json`, and enforces them from the next cycle onward — shared libs (`libs/shared/`) are automatically distributed to all relevant agents.
 
