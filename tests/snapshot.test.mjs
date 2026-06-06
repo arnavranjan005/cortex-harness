@@ -196,7 +196,7 @@ test('refreshSnapshot: updates snapshot for in-scope files after a valid cycle',
   }
 });
 
-test('refreshSnapshot: skips non-implement cycle types', () => {
+test('refreshSnapshot: refreshes non-implement cycle types too', () => {
   const root = makeTmpDir();
   const snapshotDir = join(root, '.harness', 'snapshot');
   try {
@@ -214,7 +214,36 @@ test('refreshSnapshot: skips non-implement cycle types', () => {
     snap.createPreRunSnapshot();
 
     const timeBefore = snap.readIndex()['api/x.ts']?.capturedAt;
+
+    writeFileSync(join(root, 'api/x.ts'), Buffer.from('updated\n'));
     snap.refreshSnapshot({ id: 'reconcile-g1', type: 'reconcile', agent: 'backend-subagent', outputFile: 'reconcile.json' });
+    const timeAfter = snap.readIndex()['api/x.ts']?.capturedAt;
+
+    expect(timeAfter).not.toBe(timeBefore);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshSnapshot: skips cycles without an agent', () => {
+  const root = makeTmpDir();
+  const snapshotDir = join(root, '.harness', 'snapshot');
+  try {
+    mkdirSync(join(root, 'api'), { recursive: true });
+    const content = Buffer.from('original\n');
+    writeFileSync(join(root, 'api/x.ts'), content);
+
+    const snap = makeSnap(root, snapshotDir, {
+      modifiedFiles: ['api/x.ts'],
+      configuredAgents: {},
+      cycleStateFiles: {
+        'explore.json': JSON.stringify({ filesChanged: ['api/x.ts'] }),
+      },
+    });
+    snap.createPreRunSnapshot();
+
+    const timeBefore = snap.readIndex()['api/x.ts']?.capturedAt;
+    snap.refreshSnapshot({ id: 'explore-g1', type: 'explore', agent: null, outputFile: 'explore.json' });
     const timeAfter = snap.readIndex()['api/x.ts']?.capturedAt;
 
     expect(timeBefore).toBe(timeAfter);

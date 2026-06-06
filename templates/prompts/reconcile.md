@@ -10,6 +10,12 @@ Perform reconciliation steps in order:
    used the updated version. On failure: re-delegate to owning agent, wait, re-check.
 
 2. Resolve out-of-scope gaps — collect every gap from agent reports. For each:
+   First: if an implement report claims a sub-task is "already implemented by a prior cycle"
+   and lists filesChanged: [] (or near-empty) as a result, do NOT accept that at face value —
+   open the referenced files and confirm the change actually satisfies THIS group's sub-task
+   description (not just that something in the area was edited). If it does not match, this is
+   a real gap: re-delegate it to the owning agent for this group, it is not "already done".
+
    - Frontend validation gap → re-delegate to frontend-subagent
    - Shared type/schema gap → re-delegate to backend-subagent then all consumers
    - Build wiring gap → re-delegate to infra-subagent

@@ -920,6 +920,39 @@ Current cycle: ${cycle.id}`;
 
   const CONSTRAINTS = baseConstraints + scopeGuard;
 
+  // ── TASK FOCUS ────────────────────────────────────────────────────────────
+  // For multi-intent grouped cycles, map the full user task onto this cycle's
+  // specific sub-task and show the whole decomposition so the agent can see —
+  // and self-police against — the sibling groups it must NOT implement here.
+  // Single-intent / shared cycles (cycle.subTask absent) get the bare userTask,
+  // identical to the prior behavior.
+  const taskFocus = cycle.subTask
+    ? (() => {
+        const queue = readQueue();
+        const intents = queue?.intents ?? [];
+        const decomposition = (
+          intents.length
+            ? intents
+            : [{ subTask: cycle.subTask, group: cycle.taskGroup }]
+        )
+          .map(
+            (i) =>
+              `  - [${i.group}] ${i.subTask}` +
+              (i.group === cycle.taskGroup ? "   ← YOUR CYCLE'S SCOPE" : ""),
+          )
+          .join("\n");
+        return (
+          `${userTask}\n\n` +
+          `--- This is a multi-intent task, split into ${intents.length || 1} independently-owned sub-tasks ---\n` +
+          decomposition +
+          `\n\nYour cycle owns ONLY the sub-task marked "← YOUR CYCLE'S SCOPE" (group "${cycle.taskGroup}"). ` +
+          `Every other sub-task above has its own dedicated cycle elsewhere in the queue — do not implement ` +
+          `them here, even if you notice related issues in the same files while working. If something relevant ` +
+          `to another group needs fixing, record it in outOfScopeGaps with that group's slug as owningAgent.`
+        );
+      })()
+    : userTask;
+
   // ── PRIOR CONTEXT ─────────────────────────────────────────────────────────
   const priorContext = () => {
     const parts = [];
@@ -1083,7 +1116,7 @@ Current cycle: ${cycle.id}`;
     const templatePath = join(PROMPTS_DIR, `${templateKey}.md`);
     templateContent = existsSync(templatePath)
       ? readFileSync(templatePath, "utf8")
-      : `${CONSTRAINTS}\n\nPerform cycle: ${cycle.id} (type: ${cycle.type})\n\nTask: ${userTask}\n${priorContext()}\n\nWrite your output to: ${CYCLE_STATE_RELDIR}/${cycle.outputFile ?? cycle.id + ".json"}\n\nCYCLE_COMPLETE`;
+      : `${CONSTRAINTS}\n\nPerform cycle: ${cycle.id} (type: ${cycle.type})\n\nTask: ${taskFocus}\n${priorContext()}\n\nWrite your output to: ${CYCLE_STATE_RELDIR}/${cycle.outputFile ?? cycle.id + ".json"}\n\nCYCLE_COMPLETE`;
   }
 
   // ── SUBSTITUTION ──────────────────────────────────────────────────────────
@@ -1091,7 +1124,7 @@ Current cycle: ${cycle.id}`;
     .replace(/\{\{CONSTRAINTS\}\}/g, CONSTRAINTS)
     .replace(/\{\{PRIOR_CONTEXT\}\}/g, priorContext())
     .replace(/\{\{AGENT_ROLE\}\}/g, agentRole)
-    .replace(/\{\{USER_TASK\}\}/g, userTask)
+    .replace(/\{\{USER_TASK\}\}/g, taskFocus)
     .replace(/\{\{CYCLE_ID\}\}/g, cycle.id)
     .replace(/\{\{OUTPUT_FILE\}\}/g, cycle.outputFile ?? `${cycle.id}.json`)
     .replace(/\{\{CYCLE_STATE_DIR\}\}/g, CYCLE_STATE_RELDIR)

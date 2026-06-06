@@ -99,7 +99,7 @@ export function createSnapshotManager({
   }
 
   function refreshSnapshot(cycle) {
-    if (!cycle.agent || !cycle.type.startsWith("implement-")) return;
+    if (!cycle.agent) return;
     const agentConfig = configuredAgents[cycle.agent];
     const scope = agentConfig?.scope;
     if (!scope || scope.length === 0) return;
