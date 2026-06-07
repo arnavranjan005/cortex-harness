@@ -32,6 +32,14 @@ Perform reconciliation steps in order:
 3. Consistency check — queue producers/consumers, API request/response shapes, validation schemas.
    On failure: re-delegate misaligned side.
 
+   Wiring sweep (mechanical, no domain knowledge needed): for every backend route file
+   touched/added, confirm it's imported AND app.use()'d (or framework equivalent); for
+   every frontend fetch/call to an API path, confirm that path resolves to a registered
+   route; for every provider/hook/component meant to run globally, confirm it's rendered
+   in a layout/root tree; for every nav entry pointing at a changed page, confirm it isn't
+   gated by a stale disabled/feature flag. Treat any finding here as a real gap — step 2
+   rules apply (re-delegate, do not defer, "pre-existing" is not an exemption).
+
 4. Additional group detection — only when {{CYCLE_ID}} is "reconcile-cross-group":
    Review ALL implement reports from all groups together and ask: was each group's workflow type correct?
    Signs of a wrong workflow (these cannot be fixed by re-delegation — they need new cycles):

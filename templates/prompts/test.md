@@ -56,6 +56,14 @@ Skip for single-surface changes with no shared contract edits.
 - Never retry a passing result
 - If a command times out, try once with `--forceExit --testTimeout=30000` then report as-is
 - e2e targets are out of scope unless the task explicitly touched UI-visible behavior
+- When the task touches BOTH a frontend entry point and its backing API route, run an
+  e2e smoke pass using the **Playwright MCP** (registered in `.mcp.json` during
+  `cortex-harness init` — always available in harness-initialized repos). Use MCP tool
+  calls to: navigate to the affected page(s), assert no 404/500 against same-origin
+  API calls, and confirm any nav entry pointing at it is clickable. This is the class
+  of bug static checks miss (registered-but-broken routes, disabled-but-navigable
+  links). Do NOT run `nx e2e`, do NOT scaffold a `playwright.config.*`, and do NOT
+  install anything — the MCP server handles browser automation directly.
 
 Write test report to: {{CYCLE_STATE_DIR}}/{{OUTPUT_FILE}}
 {
