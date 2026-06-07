@@ -20,6 +20,8 @@ test('throws when harness.config.json is missing', async () => {
 
 test('returns normalized paths from config', async () => {
   const dir = makeTmpDir();
+  const originalWarn = console.warn;
+  console.warn = () => {};
   try {
     writeFileSync(join(dir, 'harness.config.json'), JSON.stringify({
       harnessDir: '.harness',
@@ -31,6 +33,7 @@ test('returns normalized paths from config', async () => {
     expect(config.agentsDir).toBe(join(dir, '.harness/agents'));
     expect(config.cwd).toBe(dir);
   } finally {
+    console.warn = originalWarn;
     rmSync(dir, { recursive: true, force: true });
   }
 });
