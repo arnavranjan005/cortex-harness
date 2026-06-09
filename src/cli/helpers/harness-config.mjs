@@ -58,6 +58,29 @@ export async function repatchFromConfig(cwd, config) {
   await patchAgentScopes(agentsDir, surfacesFromConfig(config));
 }
 
+export function printMcpScopeTable(config) {
+  const scope = config.mcpScope ?? {};
+  const keys = Object.keys(scope);
+  if (!keys.length) {
+    console.log(chalk.dim("  No mcpScope configured. All MCP servers load for every cycle."));
+    console.log();
+    return;
+  }
+  const nameWidth = Math.max(...keys.map((k) => k.length), 6);
+  console.log();
+  console.log(chalk.bold("  MCP scope configuration"));
+  console.log("  " + "─".repeat(nameWidth + 4 + 40));
+  for (const [key, servers] of Object.entries(scope)) {
+    const label = key === "*" ? chalk.dim("* (all agents)") : chalk.cyan(key.padEnd(nameWidth));
+    const val = !servers || servers.length === 0
+      ? chalk.dim("(none — MCP disabled)")
+      : servers.join(", ");
+    console.log(`  ${label.padEnd(nameWidth + 2)}  ${val}`);
+  }
+  console.log("  " + "─".repeat(nameWidth + 4 + 40));
+  console.log();
+}
+
 export function printScopeTable(config) {
   const agents = config.agents || {};
   const nameWidth = Math.max(...Object.keys(agents).map((k) => k.length), 6);

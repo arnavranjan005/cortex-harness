@@ -1,0 +1,408 @@
+import { Option } from "commander";
+import fs from "fs-extra";
+import path from "path";
+import chalk from "chalk";
+import { spawn } from "child_process";
+
+// Tools registered by well-known MCP servers — used to attribute calls to a server.
+// Key = server name in .mcp.json, value = regex that matches its tool names.
+const KNOWN_TOOL_PATTERNS = {
+  playwright: /^browser_/,
+  shadcn: /^shadcn_/,
+  github: /^github_/,
+  filesystem: /^(read_file|write_file|list_directory|create_directory|move_file|search_files|get_file_info)$/,
+  fetch: /^fetch$/,
+};
+
+// Claude Code built-in tools — never come from MCP.
+const BUILTIN_TOOLS = new Set([
+  "Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent",
+  "WebFetch", "WebSearch", "NotebookEdit", "NotebookRead",
+  "PowerShell", "TodoRead", "TodoWrite",
+]);
+
+function extractToolCalls(runPath) {
+  const lines = fs.readFileSync(runPath, "utf8").split("\n").filter(Boolean);
+  const calls = new Map(); // toolName → count
+
+  for (const line of lines) {
+    try {
+      const ev = JSON.parse(line);
+      // Tool calls live in raw Claude stream events: type=assistant, content[].type=tool_use
+      if (ev.raw) {
+        const raw = typeof ev.raw === "string" ? JSON.parse(ev.raw) : ev.raw;
+        if ((raw.type === "assistant" || raw.role === "assistant") && Array.isArray(raw.message?.content)) {
+          for (const block of raw.message.content) {
+            if (block.type === "tool_use" && block.name) {
+              calls.set(block.name, (calls.get(block.name) ?? 0) + 1);
+            }
+          }
+        }
+      }
+    } catch {
+      /* skip malformed lines */
+    }
+  }
+  return calls;
+}
+
+function attributeTools(toolCalls, servers) {
+  const attribution = new Map(); // serverName → Map<toolName, count>
+  const builtins = new Map();    // known Claude Code internal tools
+  const unknownMcp = new Map();  // not built-in, not matched to a server → likely MCP
+
+  for (const [tool, count] of toolCalls) {
+    // 1. Try to match a registered server by its known tool pattern
+    let matched = false;
+    for (const serverName of Object.keys(servers)) {
+      const pattern = KNOWN_TOOL_PATTERNS[serverName];
+      if (pattern && pattern.test(tool)) {
+        if (!attribution.has(serverName)) attribution.set(serverName, new Map());
+        attribution.get(serverName).set(tool, count);
+        matched = true;
+        break;
+      }
+    }
+    if (matched) continue;
+
+    // 2. Known Claude Code built-in?
+    if (BUILTIN_TOOLS.has(tool)) {
+      builtins.set(tool, count);
+      continue;
+    }
+
+    // 3. Not built-in, not attributed → likely an MCP tool from an unregistered/unknown server
+    unknownMcp.set(tool, count);
+  }
+  return { attribution, builtins, unknownMcp };
+}
+
+const MCP_INIT_REQUEST = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "cortex-harness", version: "1.0.0" },
+  },
+}) + "\n";
+
+// Spawns a stdio MCP server, sends the initialize handshake, returns result.
+function checkServer(name, serverConfig, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    if (serverConfig.type && serverConfig.type !== "stdio") {
+      resolve({ ok: false, error: `type "${serverConfig.type}" is not supported for health check (only stdio)` });
+      return;
+    }
+
+    const start = Date.now();
+    let stdout = "";
+    let proc;
+
+    try {
+      proc = spawn(serverConfig.command, serverConfig.args ?? [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, ...(serverConfig.env ?? {}) },
+        // On Windows, npm/npx install as .ps1/.cmd — shell:true lets the OS resolve them.
+        shell: process.platform === "win32",
+      });
+    } catch (err) {
+      resolve({ ok: false, error: `Failed to spawn: ${err.message}` });
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve({ ok: false, error: `Timed out after ${timeoutMs / 1000}s — server did not respond` });
+    }, timeoutMs);
+
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      // MCP responses are newline-delimited JSON; look for the initialize response
+      for (const line of stdout.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.id === 1 && msg.result) {
+            clearTimeout(timer);
+            try { proc.kill(); } catch { /* ignore */ }
+            resolve({
+              ok: true,
+              latencyMs: Date.now() - start,
+              serverInfo: msg.result.serverInfo ?? null,
+              protocolVersion: msg.result.protocolVersion ?? null,
+            });
+            return;
+          }
+          if (msg.id === 1 && msg.error) {
+            clearTimeout(timer);
+            try { proc.kill(); } catch { /* ignore */ }
+            resolve({ ok: false, error: `MCP error: ${msg.error.message ?? JSON.stringify(msg.error)}` });
+            return;
+          }
+        } catch { /* keep buffering */ }
+      }
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err.message });
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (!stdout.trim()) {
+        resolve({ ok: false, error: `Process exited (code ${code}) with no output` });
+      }
+    });
+
+    // Send initialize request
+    try {
+      proc.stdin.write(MCP_INIT_REQUEST);
+    } catch (err) {
+      clearTimeout(timer);
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve({ ok: false, error: `Failed to write to stdin: ${err.message}` });
+    }
+  });
+}
+
+export function registerMcpCommand(program) {
+  const mcpCmd = program
+    .command("mcp")
+    .description("Show registered MCP servers and their usage in run logs");
+
+  // ── default: servers + last run usage ────────────────────────────────────────
+  mcpCmd.action(async () => {
+    await showServers(process.cwd());
+    await showUsage(process.cwd(), null);
+  });
+
+  // ── mcp list ─────────────────────────────────────────────────────────────────
+  mcpCmd
+    .command("list")
+    .description("List registered MCP servers from .mcp.json")
+    .action(async () => {
+      await showServers(process.cwd());
+    });
+
+  // ── mcp check ────────────────────────────────────────────────────────────────
+  mcpCmd
+    .command("check")
+    .description("Verify each registered MCP server responds to the initialize handshake")
+    .action(async () => {
+      await showCheck(process.cwd());
+    });
+
+  // ── mcp usage ────────────────────────────────────────────────────────────────
+  mcpCmd
+    .command("usage")
+    .description("Show MCP tool calls from a run log")
+    .addOption(
+      new Option(
+        "--run <timestamp>",
+        "Specific run timestamp to inspect (filename without .jsonl)",
+      ).default(null),
+    )
+    .action(async (options) => {
+      await showUsage(process.cwd(), options.run);
+    });
+}
+
+async function showServers(cwd) {
+  const mcpPath = path.join(cwd, ".mcp.json");
+  const W = Math.min(process.stdout.columns || 72, 72);
+  const line = chalk.dim("─".repeat(W));
+
+  console.log(`\n${chalk.bold.cyan("  Registered MCP Servers")}`);
+  console.log(line);
+
+  if (!(await fs.pathExists(mcpPath))) {
+    console.log(chalk.dim("  No .mcp.json found in this directory."));
+    console.log(chalk.dim('  Run "cortex-harness init" to register the Playwright MCP server.'));
+    console.log();
+    return;
+  }
+
+  let mcp;
+  try {
+    mcp = await fs.readJson(mcpPath);
+  } catch {
+    console.log(chalk.red("  .mcp.json exists but could not be parsed."));
+    console.log();
+    return;
+  }
+
+  const servers = mcp.mcpServers ?? {};
+  const names = Object.keys(servers);
+
+  if (!names.length) {
+    console.log(chalk.dim("  .mcp.json has no servers registered."));
+    console.log();
+    return;
+  }
+
+  for (const name of names) {
+    const s = servers[name];
+    const cmd = [s.command, ...(s.args ?? [])].join(" ");
+    const known = KNOWN_TOOL_PATTERNS[name] ? chalk.dim(` (tools: ${KNOWN_TOOL_PATTERNS[name].source})`) : "";
+    console.log(`  ${chalk.green("●")} ${chalk.bold(name)}${known}`);
+    console.log(`    ${chalk.dim("type:")} ${s.type ?? "stdio"}  ${chalk.dim("cmd:")} ${chalk.cyan(cmd)}`);
+  }
+  console.log(chalk.dim(`\n  Run "cortex-harness mcp check" to verify servers are reachable.`));
+  console.log();
+}
+
+async function showCheck(cwd) {
+  const mcpPath = path.join(cwd, ".mcp.json");
+  const W = Math.min(process.stdout.columns || 72, 72);
+  const line = chalk.dim("─".repeat(W));
+
+  console.log(`\n${chalk.bold.cyan("  MCP Server Health Check")}`);
+  console.log(line);
+
+  if (!(await fs.pathExists(mcpPath))) {
+    console.log(chalk.dim("  No .mcp.json found — nothing to check."));
+    console.log();
+    return;
+  }
+
+  let mcp;
+  try {
+    mcp = await fs.readJson(mcpPath);
+  } catch {
+    console.log(chalk.red("  .mcp.json could not be parsed."));
+    console.log();
+    return;
+  }
+
+  const servers = mcp.mcpServers ?? {};
+  const names = Object.keys(servers);
+
+  if (!names.length) {
+    console.log(chalk.dim("  No servers registered."));
+    console.log();
+    return;
+  }
+
+  console.log(chalk.dim(`  Spawning ${names.length} server(s) and sending initialize handshake...\n`));
+
+  const results = await Promise.all(
+    names.map(async (name) => ({ name, result: await checkServer(name, servers[name]) }))
+  );
+
+  let allOk = true;
+  for (const { name, result } of results) {
+    if (result.ok) {
+      const info = result.serverInfo
+        ? chalk.dim(` — ${result.serverInfo.name ?? name}${result.serverInfo.version ? " v" + result.serverInfo.version : ""}`)
+        : "";
+      const latency = chalk.dim(` (${result.latencyMs}ms)`);
+      console.log(`  ${chalk.green("✓")} ${chalk.bold(name)}${info}${latency}`);
+    } else {
+      allOk = false;
+      console.log(`  ${chalk.red("✗")} ${chalk.bold(name)}  ${chalk.red(result.error)}`);
+    }
+  }
+
+  console.log();
+  if (allOk) {
+    console.log(chalk.green("  All servers healthy."));
+  } else {
+    console.log(chalk.yellow("  Some servers failed. Check the command and args in .mcp.json."));
+  }
+  console.log();
+}
+
+async function showUsage(cwd, runArg) {
+  const runsDir = path.join(cwd, ".harness", "runs");
+  const W = Math.min(process.stdout.columns || 72, 72);
+  const line = chalk.dim("─".repeat(W));
+
+  if (!(await fs.pathExists(runsDir))) {
+    console.log(chalk.dim("  No run logs found (.harness/runs/ missing)."));
+    return;
+  }
+
+  const runFiles = (await fs.readdir(runsDir))
+    .filter((f) => f.endsWith(".jsonl"))
+    .sort()
+    .reverse();
+
+  if (!runFiles.length) {
+    console.log(chalk.dim("  No run logs found."));
+    return;
+  }
+
+  let targetFile;
+  if (runArg) {
+    targetFile = `${runArg}.jsonl`;
+    if (!runFiles.includes(targetFile)) {
+      console.log(chalk.red(`  Run "${runArg}" not found.`));
+      console.log(chalk.dim("  Available: " + runFiles.slice(0, 5).map((f) => f.replace(".jsonl", "")).join(", ")));
+      process.exit(1);
+    }
+  } else {
+    targetFile = runFiles[0];
+  }
+
+  const runPath = path.join(runsDir, targetFile);
+  const runLabel = targetFile.replace(".jsonl", "");
+
+  console.log(`${chalk.bold.cyan("  Tool Usage")}  ${chalk.dim("run: " + runLabel)}`);
+  console.log(line);
+
+  const toolCalls = extractToolCalls(runPath);
+
+  if (!toolCalls.size) {
+    console.log(chalk.dim("  No tool calls recorded in this run."));
+    console.log();
+    return;
+  }
+
+  // Load .mcp.json servers for attribution
+  let servers = {};
+  try {
+    const mcp = await fs.readJson(path.join(cwd, ".mcp.json"));
+    servers = mcp.mcpServers ?? {};
+  } catch { /* no .mcp.json — show everything as unattributed */ }
+
+  const { attribution, builtins, unknownMcp } = attributeTools(toolCalls, servers);
+
+  // 1. Attributed MCP calls per registered server
+  for (const [serverName, tools] of attribution) {
+    const total = [...tools.values()].reduce((a, b) => a + b, 0);
+    console.log(`\n  ${chalk.green("●")} ${chalk.bold(serverName)} MCP  ${chalk.dim(`(${total} calls)`)}`);
+    for (const [tool, count] of [...tools.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${chalk.magenta("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
+    }
+  }
+
+  // 2. Unknown MCP — not built-in, not matched to any registered server
+  if (unknownMcp.size) {
+    const total = [...unknownMcp.values()].reduce((a, b) => a + b, 0);
+    console.log(`\n  ${chalk.yellow("●")} ${chalk.yellow("MCP (unregistered server)")}  ${chalk.dim(`(${total} calls)`)}`);
+    for (const [tool, count] of [...unknownMcp.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${chalk.yellow("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
+    }
+  }
+
+  // 3. Built-in Claude Code tools
+  if (builtins.size) {
+    const total = [...builtins.values()].reduce((a, b) => a + b, 0);
+    console.log(`\n  ${chalk.dim("●")} ${chalk.dim(`built-in  (${total} calls)`)}`);
+    for (const [tool, count] of [...builtins.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${chalk.dim("⚙")} ${chalk.dim(tool.padEnd(36) + " ×" + count)}`);
+    }
+  }
+
+  // Servers registered but with no calls in this run
+  const usedServers = new Set(attribution.keys());
+  const unusedServers = Object.keys(servers).filter((s) => !usedServers.has(s));
+  if (unusedServers.length) {
+    console.log(`\n  ${chalk.dim("No calls recorded for:")} ${unusedServers.map((s) => chalk.dim(s)).join(", ")}`);
+  }
+
+  console.log();
+}
