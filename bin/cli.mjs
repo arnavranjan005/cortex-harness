@@ -17,6 +17,7 @@ import { registerStatusCommand } from "../src/cli/commands/status.mjs";
 import { registerResumeCommand } from "../src/cli/commands/resume.mjs";
 import { registerLogsCommand } from "../src/cli/commands/logs.mjs";
 import { registerNotifySetupCommand, registerNotifyCommand } from "../src/cli/commands/notify.mjs";
+import { registerMcpCommand } from "../src/cli/commands/mcp.mjs";
 
 import { findLatestDelivery, findResidualRisksSection } from "../src/cli/helpers/delivery.mjs";
 import { clearHarnessState, readRunEndSpend, spawnRun, spawnResumedRun, resumeBlockedCycles } from "../src/cli/helpers/run-control.mjs";
@@ -174,5 +175,6 @@ registerResumeCommand(program, { pkgRoot });
 registerLogsCommand(program);
 registerNotifySetupCommand(program);
 registerNotifyCommand(program, { pkgRoot });
+registerMcpCommand(program);
 
 program.parse();

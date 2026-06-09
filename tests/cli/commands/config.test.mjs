@@ -175,3 +175,121 @@ test('config add-scope + remove-scope round-trip leaves scope unchanged', () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── MCP scope subcommands ──────────────────────────────────────────────────────
+
+test('config mcp-scope prints MCP scope table', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'mcp-scope'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('MCP scope');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config add-mcp-scope adds a server to an agent', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'backend-subagent', 'my-server'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Added');
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.mcpScope['backend-subagent']).toContain('my-server');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config add-mcp-scope supports * wildcard for all agents', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'add-mcp-scope', '*', 'global-server'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.mcpScope['*']).toContain('global-server');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config add-mcp-scope is idempotent', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'frontend-subagent', 'playwright'], { cwd: dir, encoding: 'utf8' });
+    const result = spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'frontend-subagent', 'playwright'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already in');
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    const count = config.mcpScope['frontend-subagent'].filter(s => s === 'playwright').length;
+    expect(count).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config add-mcp-scope exits non-zero for unknown agent key', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'nonexistent-agent', 'server'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Unknown key');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config remove-mcp-scope removes a server from an agent', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'tester-subagent', 'playwright'], { cwd: dir, encoding: 'utf8' });
+
+    const result = spawnSync('node', [CLI, 'config', 'remove-mcp-scope', 'tester-subagent', 'playwright'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Removed');
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.mcpScope['tester-subagent'] ?? []).not.toContain('playwright');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config remove-mcp-scope is no-op when server not present', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'remove-mcp-scope', 'backend-subagent', 'nonexistent-server'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('not in');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config add-mcp-scope + remove-mcp-scope round-trip leaves mcpScope unchanged', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const before = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    const scopeBefore = [...(before.mcpScope?.['frontend-subagent'] ?? [])];
+
+    spawnSync('node', [CLI, 'config', 'add-mcp-scope', 'frontend-subagent', 'test-server'], { cwd: dir, encoding: 'utf8' });
+    spawnSync('node', [CLI, 'config', 'remove-mcp-scope', 'frontend-subagent', 'test-server'], { cwd: dir, encoding: 'utf8' });
+
+    const after = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(after.mcpScope?.['frontend-subagent'] ?? []).toEqual(scopeBefore);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
