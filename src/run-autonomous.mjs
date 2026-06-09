@@ -96,6 +96,33 @@ const SNAPSHOT_DIR = join(HARNESS_DIR, "pre-run-snapshot");
 // Relative path for use inside cycle prompts (Claude writes files relative to cwd)
 const CYCLE_STATE_RELDIR = relative(ROOT, CYCLE_DIR).replace(/\\/g, "/");
 
+// ── MCP scope filtering ───────────────────────────────────────────────────────
+// Reads mcpScope from harness.config.json and .mcp.json from ROOT, then returns
+// a filtered mcpServers object scoped to the given agent — or null when no filtering
+// is needed (mcpScope absent). Writes nothing; caller is responsible for temp file.
+
+function buildFilteredMcpServers(agentName) {
+  const mcpScope = config.mcpScope;
+  if (!mcpScope || typeof mcpScope !== "object") return null;
+
+  const mcpPath = join(ROOT, ".mcp.json");
+  if (!existsSync(mcpPath)) return null;
+
+  let mcp;
+  try { mcp = JSON.parse(readFileSync(mcpPath, "utf8")); } catch { return null; }
+
+  const allServers = mcp.mcpServers ?? {};
+  const globalAllowed = Array.isArray(mcpScope["*"]) ? mcpScope["*"] : [];
+  const agentAllowed = Array.isArray(mcpScope[agentName]) ? mcpScope[agentName] : [];
+  const allowed = new Set([...globalAllowed, ...agentAllowed]);
+
+  const filtered = {};
+  for (const name of allowed) {
+    if (allServers[name]) filtered[name] = allServers[name];
+  }
+  return filtered;
+}
+
 // ── Process kill helper ───────────────────────────────────────────────────────
 // On Windows, SIGTERM only signals the top-level PowerShell process.
 // taskkill /F /T kills the entire process tree including all descendants.
@@ -1245,6 +1272,15 @@ async function runCycle(cycle, remainingBudgetUsd) {
       Math.max(0.5, Number(remainingBudgetUsd.toFixed(2))),
     );
 
+    // Build per-cycle MCP config. Returns null when mcpScope is not configured.
+    const agentName = cycle.agent ?? null;
+    const filteredServers = agentName ? buildFilteredMcpServers(agentName) : null;
+    let tmpMcpPath = null;
+    if (filteredServers !== null) {
+      tmpMcpPath = join(HARNESS_DIR, `tmp-mcp-${cycle.id}.json`);
+      writeFileSync(tmpMcpPath, JSON.stringify({ mcpServers: filteredServers }, null, 2), "utf8");
+    }
+
     let proc;
     if (isWindows) {
       // Write prompt to a plain UTF-8 file and pipe via stdin.
@@ -1259,9 +1295,12 @@ async function runCycle(cycle, remainingBudgetUsd) {
         RUNS_DIR,
         `${runTimestamp}-${cycle.id.replace(/[^a-z0-9]/gi, "-")}.ps1`,
       );
+      const mcpConfigFlag = tmpMcpPath
+        ? ` --mcp-config "${tmpMcpPath.replace(/\\/g, "/")}"`
+        : "";
       writeFileSync(
         psFile,
-        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & claude --print --output-format stream-json --verbose --max-budget-usd ${budgetArg} --dangerously-skip-permissions\n`,
+        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & claude --print --output-format stream-json --verbose --max-budget-usd ${budgetArg} --dangerously-skip-permissions${mcpConfigFlag}\n`,
         "utf8",
       );
       proc = spawn(
@@ -1288,9 +1327,17 @@ async function runCycle(cycle, remainingBudgetUsd) {
           "--max-budget-usd",
           budgetArg,
           "--dangerously-skip-permissions",
+          ...(tmpMcpPath ? ["--mcp-config", tmpMcpPath] : []),
         ],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
+    }
+
+    // Clean up temp MCP config file when the process exits (best-effort).
+    if (tmpMcpPath) {
+      proc.on("close", () => {
+        try { unlinkSync(tmpMcpPath); } catch { /* ignore — file may already be gone */ }
+      });
     }
 
     proc.on("error", (err) => {

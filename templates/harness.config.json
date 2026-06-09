@@ -2,6 +2,16 @@
   "harnessDir": ".harness",
   "promptsDir": ".harness/prompts",
   "agentsDir": ".harness/agents",
+  "mcpScope": {
+    "*": [],
+    "frontend-subagent": ["playwright", "shadcn"],
+    "tester-subagent": ["playwright"],
+    "backend-subagent": [],
+    "distributed-subagent": [],
+    "infra-subagent": [],
+    "explorer-subagent": [],
+    "planner-subagent": []
+  },
   "agents": {
     "backend-subagent": {
       "scope": []
