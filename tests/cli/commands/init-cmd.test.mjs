@@ -161,3 +161,40 @@ test('init --help exits 0', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('init --yes exits 0 and creates harness files without prompting', () => {
+  const dir = makeTmpDir();
+  try {
+    const result = spawnSync('node', [CLI, 'init', '--yes'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(existsSync(join(dir, 'harness.config.json'))).toBe(true);
+    expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('init -y is equivalent to --yes', () => {
+  const dir = makeTmpDir();
+  try {
+    const result = spawnSync('node', [CLI, 'init', '-y'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(existsSync(join(dir, 'harness.config.json'))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('init --yes keeps existing files without prompting', () => {
+  const dir = makeTmpDir();
+  try {
+    writeFileSync(join(dir, 'harness.config.json'), JSON.stringify({ custom: true }, null, 2));
+
+    const result = spawnSync('node', [CLI, 'init', '--yes'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.custom).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

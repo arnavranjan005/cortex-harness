@@ -81,6 +81,22 @@ describe('copyFile', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('keeps existing file without prompting when opts.yes is true', async () => {
+    const dir = makeTmpDir('fsutils-copyfile-yes');
+    try {
+      const src = join(dir, 'src.txt');
+      const dest = join(dir, 'dest.txt');
+      writeFileSync(src, 'new-content');
+      writeFileSync(dest, 'old-content');
+
+      const status = await copyFile(src, dest, 'dest.txt', rlStub, { yes: true });
+      expect(status).toBe('kept');
+      expect(readFileSync(dest, 'utf8')).toBe('old-content');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('copyDir', () => {

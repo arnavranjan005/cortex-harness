@@ -19,7 +19,8 @@ export function registerInitCommand(program, ctx) {
     .description(
       "Initialize the harness and lifecycle hooks in the current project",
     )
-    .action(async () => {
+    .option("-y, --yes", "accept all defaults, skip interactive prompts")
+    .action(async (opts) => {
       const targetHarnessDir = path.join(process.cwd(), ".harness");
       const targetClaudeDir = path.join(process.cwd(), ".claude");
       const templatesDir = path.join(ctx.pkgRoot, "templates");
@@ -40,6 +41,8 @@ export function registerInitCommand(program, ctx) {
         console.log("\n" + chalk.bold(`  ${label}`));
       }
 
+      const copyOpts = { yes: !!opts.yes };
+
       // 1. Prompts
       section("Scaffolding prompts");
       await copyDir(
@@ -47,6 +50,7 @@ export function registerInitCommand(program, ctx) {
         path.join(targetHarnessDir, "prompts"),
         rl,
         ".harness/prompts",
+        copyOpts,
       );
 
       // 2. Agents
@@ -56,6 +60,7 @@ export function registerInitCommand(program, ctx) {
         path.join(targetHarnessDir, "agents"),
         rl,
         ".harness/agents",
+        copyOpts,
       );
 
       // 3. Memory
@@ -66,6 +71,7 @@ export function registerInitCommand(program, ctx) {
           path.join(targetHarnessDir, "memory"),
           rl,
           ".harness/memory",
+          copyOpts,
         );
       }
 
@@ -78,6 +84,7 @@ export function registerInitCommand(program, ctx) {
           path.join(targetHarnessDir, "scripts"),
           rl,
           ".harness/scripts",
+          copyOpts,
         );
       }
 
@@ -117,6 +124,7 @@ export function registerInitCommand(program, ctx) {
           configPath,
           "harness.config.json",
           rl,
+          copyOpts,
         );
         console.log(`  ${fileIcon(status)} ${chalk.dim("harness.config.json")}`);
       }
@@ -129,6 +137,7 @@ export function registerInitCommand(program, ctx) {
           claudeMdPath,
           "CLAUDE.md",
           rl,
+          copyOpts,
         );
         console.log(`  ${fileIcon(status)} ${chalk.dim("CLAUDE.md")}`);
       }
@@ -173,7 +182,7 @@ export function registerInitCommand(program, ctx) {
       console.log(chalk.bold("  Surface configuration"));
       console.log(line);
       const detected = await detectSurfaces(process.cwd());
-      const surfaces = await confirmSurfaces(detected, rl);
+      const surfaces = await confirmSurfaces(detected, rl, copyOpts);
 
       if (await fs.pathExists(configPath)) {
         await applySurfaces(

@@ -21,10 +21,10 @@ export function fileIcon(status) {
 
 // Copy a single file, prompting keep/update if it already exists.
 // Returns "created" | "updated" | "kept"
-export async function copyFile(src, dest, rel, rl) {
+export async function copyFile(src, dest, rel, rl, opts = {}) {
   const exists = await fs.pathExists(dest);
   if (exists) {
-    if (!process.stdin.isTTY) return "kept";
+    if (opts.yes || !process.stdin.isTTY) return "kept";
     const answer = await rl.question(
       `  ${chalk.yellow("?")} ${chalk.dim(rel)} already exists — update? ${chalk.dim("[y/N]")}: `,
     );
@@ -38,13 +38,13 @@ export async function copyFile(src, dest, rel, rl) {
 }
 
 // Copy all files in srcDir → destDir, prompting per conflict.
-export async function copyDir(srcDir, destDir, rl, rootLabel) {
+export async function copyDir(srcDir, destDir, rl, rootLabel, opts = {}) {
   if (!(await fs.pathExists(srcDir))) return;
   const files = await getAllFiles(srcDir);
   for (const srcFile of files) {
     const rel = path.join(rootLabel, path.relative(srcDir, srcFile));
     const destFile = path.join(destDir, path.relative(srcDir, srcFile));
-    const status = await copyFile(srcFile, destFile, rel, rl);
+    const status = await copyFile(srcFile, destFile, rel, rl, opts);
     console.log(`  ${fileIcon(status)} ${chalk.dim(rel)}`);
   }
 }
