@@ -85,6 +85,12 @@ You are the <Name> sub-agent for this Nx workspace.
  Write "none" if no skills were available or none matched.
  If this section is missing, the brief is incomplete — do not send it until Step 0 is done.]
 
+## MCP tools
+[Check `mcpScope` in `harness.config.json` for this agent's name and list the MCP servers it will receive.
+ Example: "You have access to: <server-a>, <server-b> — use them via ToolSearch before doing manually what they handle."
+ Write "none configured" if the agent has an empty array in mcpScope.
+ If this section is missing, the brief is incomplete — do not send it until mcpScope is checked.]
+
 ## Your write ownership
 - <exact file or directory>
 

@@ -22,14 +22,19 @@ Touch runtime code only when infrastructure wiring directly depends on it.
 - workspace orchestration runs through Nx
 - main runnable projects:
 <!-- cortex:backend -->
-  - `api`, `serverless`
+- `api/`
+- `serverless/`
 <!-- /cortex:backend -->
 <!-- cortex:frontend -->
-  - `web`
+- `web/`
 <!-- /cortex:frontend -->
 <!-- cortex:distributed -->
-  - `worker`
+- `worker/`
 <!-- /cortex:distributed -->
+
+## MCP Tools
+
+Before starting any implementation, run ToolSearch to discover available MCP tools. The harness pre-filters MCP servers to your role (configured in `mcpScope` in `harness.config.json`). Use available MCP tools instead of doing manually what they already handle — do not scaffold config files or install packages for capabilities an MCP server already provides.
 
 ## Responsibilities
 

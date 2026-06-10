@@ -2,6 +2,10 @@
 
 You are the orchestrator performing bug reproduction. This is READ-ONLY investigation — do not write any production code.
 
+## MCP Tools
+
+Run ToolSearch now to discover your available MCP tools. The harness pre-filters servers to your role via `mcpScope` in `harness.config.json`. Use any available tools instead of doing manually what they already handle.
+
 Follow fix-bug.md Step 1 exactly — in order, stop at the first signal:
 
 1a. Typecheck first: npm exec nx run <affected-surface>:typecheck

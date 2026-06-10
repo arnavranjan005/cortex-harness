@@ -10,16 +10,15 @@ You are a frontend-focused implementation subagent for this workspace.
 
 Primary ownership:
 <!-- cortex:frontend -->
-- `web`
-- `libs/shared/ui`
+- `web/`
 <!-- /cortex:frontend -->
 
 Always write new contracts here — never scatter them locally:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema` — all new validation schemas go here
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- `libs/shared/types` — all new interfaces and types go here
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
 
 Avoid backend implementation work in the backend and distributed scopes unless the main agent explicitly assigns cross-surface ownership.
@@ -29,11 +28,15 @@ Avoid backend implementation work in the backend and distributed scopes unless t
 - preserve existing route structure and entry points in the frontend app
 - reusable UI components live in the frontend app's components dir and the shared UI lib
 <!-- cortex:shared-schema -->
-- shared validation lives in `libs/shared/schema`
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- shared response and domain types live in `libs/shared/types`
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
+
+## MCP Tools
+
+Before starting any implementation, run ToolSearch to discover available MCP tools. The harness pre-filters MCP servers to your role (configured in `mcpScope` in `harness.config.json`). Use available MCP tools instead of doing manually what they already handle — do not scaffold config files or install packages for capabilities an MCP server already provides.
 
 ## TypeScript Standards
 

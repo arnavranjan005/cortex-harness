@@ -3,7 +3,7 @@ import path from "path";
 import { createInterface } from "readline/promises";
 import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
-import { mergeMcpConfig } from "../helpers/mcp-config.mjs";
+import { mergeMcpConfig, autoScopeMcpServers } from "../helpers/mcp-config.mjs";
 import { patchGitignore } from "../helpers/gitignore.mjs";
 import { fileIcon, copyFile, copyDir } from "../helpers/fs-utils.mjs";
 import {
@@ -142,18 +142,29 @@ export function registerInitCommand(program, ctx) {
         );
       }
 
-      // 8. Playwright MCP registration — additive-only, never overwrites user entries
+      // 8. MCP registration — additive-only, never overwrites user entries
       {
-        const mcpStatus = await mergeMcpConfig(templatesDir, process.cwd());
+        const { status: mcpStatus, added } = await mergeMcpConfig(templatesDir, process.cwd());
         const mcpLabels = {
           created: { icon: "created", note: "" },
-          merged: { icon: "updated", note: chalk.dim("  (merged playwright server)") },
+          merged: { icon: "updated", note: chalk.dim(`  (added: ${added.join(", ")})`) },
           present: { icon: "kept", note: chalk.dim("  (already registered)") },
           absent: null,
         };
         const label = mcpLabels[mcpStatus];
         if (label) {
           console.log(`  ${fileIcon(label.icon)} ${chalk.dim(".mcp.json")}${label.note}`);
+        }
+
+        // Auto-scope known servers into matching agents' mcpScope
+        const configPath = path.join(process.cwd(), "harness.config.json");
+        if (added.length && (await fs.pathExists(configPath))) {
+          const autoScoped = await autoScopeMcpServers(configPath, added);
+          for (const { server, agents } of autoScoped) {
+            console.log(
+              `  ${chalk.green("↑")} ${chalk.dim(`mcpScope: ${server} → ${agents.join(", ")}`)}`,
+            );
+          }
         }
       }
 

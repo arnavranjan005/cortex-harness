@@ -14,25 +14,25 @@ Answer specific codebase questions quickly and precisely without making edits.
 
 Runtime surfaces:
 <!-- cortex:backend -->
-- `api`
-- `serverless`
+- `api/`
+- `serverless/`
 <!-- /cortex:backend -->
 <!-- cortex:frontend -->
-- `web`
+- `web/`
 <!-- /cortex:frontend -->
 <!-- cortex:distributed -->
-- `worker`
+- `worker/`
 <!-- /cortex:distributed -->
 
 Shared code:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema`
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- `libs/shared/types`
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
 <!-- cortex:shared-ui -->
-- `libs/shared/ui`
+- `libs/shared/ui/`
 <!-- /cortex:shared-ui -->
 
 - workflow and automation: `.github`, `nx.json`, package manifests
@@ -43,6 +43,10 @@ Shared code:
 - trace dependencies between projects or modules
 - identify available Nx targets and relevant project configuration
 - summarize current code patterns before implementation work begins
+
+## MCP Tools
+
+Before starting your analysis, run ToolSearch to discover available MCP tools. The harness pre-filters MCP servers to your role (configured in `mcpScope` in `harness.config.json`). Use available MCP tools instead of doing manually what they already handle.
 
 ## Rules
 

@@ -117,12 +117,13 @@ If no skills match: record "none available / none matched" and continue.
 - `nx-workspace` before any workspace exploration or agent briefing
 - `nx-generate` before any scaffolding or generator call
 
-**In cycle mode (autonomous harness) — skill propagation protocol:**
+**In cycle mode (autonomous harness) — skill and MCP propagation protocol:**
 - The `orchestrate` cycle invokes all matching skills and writes output to `.harness/cycle-state/skills.json`
   Format: `{ "invoked": ["skill-name", ...], "output": { "skill-name": "<one-line summary>" } }`
   If no skills match: write `{ "invoked": [], "output": {} }` — marks Step 0 complete, not skipped
 - Implement cycles do not re-invoke skills — they read `skills.json` from `cycle-state/` as their `## Skill guidance`
 - If `skills.json` is absent when an implement cycle runs: write "none available / none matched"
+- When briefing sub-agents (interactive or autonomous), always include which MCP servers they will receive — agents start cold and will not use MCPs unless explicitly told. Check `mcpScope[agent-name]` plus `mcpScope["*"]` in `harness.config.json` for the full list. Use ToolSearch to discover available tools before doing manually what an MCP already handles.
 
 ## Reconciliation Protocol (after all agents report back)
 

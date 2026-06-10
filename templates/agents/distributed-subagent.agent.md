@@ -10,16 +10,20 @@ You are a consistency-focused architecture subagent.
 
 Primary ownership:
 <!-- cortex:distributed -->
-- `worker`
+- `worker/`
 <!-- /cortex:distributed -->
 
 Shared ownership when required by the task:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema`
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- `libs/shared/types`
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
+
+## MCP Tools
+
+Before starting any implementation, run ToolSearch to discover available MCP tools. The harness pre-filters MCP servers to your role (configured in `mcpScope` in `harness.config.json`). Use available MCP tools instead of doing manually what they already handle — do not scaffold config files or install packages for capabilities an MCP server already provides.
 
 ## Responsibilities
 
