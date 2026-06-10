@@ -10,19 +10,19 @@
 
 Most agent harnesses give you a single orchestrator loop with no structure between steps. Cortex is different:
 
-| Feature                          | Cortex                                                        | Most harnesses          |
-| -------------------------------- | ------------------------------------------------------------- | ----------------------- |
-| Typed cycle state machine        | ✓ Zod-validated JSON per cycle                                | ✗ free-form chat        |
-| Git-enforced write scopes        | ✓ auto-revert out-of-scope changes                            | ✗ agents write anywhere |
-| Parallel sub-agents              | ✓ `Promise.allSettled` on non-overlapping scopes              | ✗ sequential only       |
-| Multi-intent decomposition       | ✓ splits mixed tasks into ordered groups, each fully verified | ✗ one task at a time    |
-| Dynamic queue extension          | ✓ reconcile-cross-group injects missing cycle groups at runtime | ✗ static plan only    |
-| Fix injection on test failure    | ✓ dynamic cycle injection, configurable `MAX_RETRIES`         | ✗ manual retry          |
-| Rate-limit recovery              | ✓ writes partial state, `resume` re-enters at last cycle      | ✗ start over            |
-| Nx-aware verification            | ✓ `nx affected` — only reruns stale projects                  | ✗ full rebuild          |
-| Config-driven agents             | ✓ drop `harness.config.json` into any Nx workspace            | ✗ code changes needed   |
-| Surface auto-detection           | ✓ scans project tree on `init`, no manual path entry          | ✗ hardcoded config      |
-| Auto-scope update                | ✓ locks in new paths after unconstrained agent runs           | ✗ manual config update  |
+| Feature                       | Cortex                                                          | Most harnesses          |
+| ----------------------------- | --------------------------------------------------------------- | ----------------------- |
+| Typed cycle state machine     | ✓ Zod-validated JSON per cycle                                  | ✗ free-form chat        |
+| Git-enforced write scopes     | ✓ auto-revert out-of-scope changes                              | ✗ agents write anywhere |
+| Parallel sub-agents           | ✓ `Promise.allSettled` on non-overlapping scopes                | ✗ sequential only       |
+| Multi-intent decomposition    | ✓ splits mixed tasks into ordered groups, each fully verified   | ✗ one task at a time    |
+| Dynamic queue extension       | ✓ reconcile-cross-group injects missing cycle groups at runtime | ✗ static plan only      |
+| Fix injection on test failure | ✓ dynamic cycle injection, configurable `MAX_RETRIES`           | ✗ manual retry          |
+| Rate-limit recovery           | ✓ writes partial state, `resume` re-enters at last cycle        | ✗ start over            |
+| Nx-aware verification         | ✓ `nx affected` — only reruns stale projects                    | ✗ full rebuild          |
+| Config-driven agents          | ✓ drop `harness.config.json` into any Nx workspace              | ✗ code changes needed   |
+| Surface auto-detection        | ✓ scans project tree on `init`, no manual path entry            | ✗ hardcoded config      |
+| Auto-scope update             | ✓ locks in new paths after unconstrained agent runs             | ✗ manual config update  |
 
 ---
 
@@ -259,19 +259,19 @@ Out-of-scope file writes are automatically reverted by git after each implement 
 
 ## Cycle Reference
 
-| Cycle                   | Type         | What it does                                                                   | Output file                    |
-| ----------------------- | ------------ | ------------------------------------------------------------------------------ | ------------------------------ |
-| `orchestrate`           | planning     | Routes prompt type, decomposes multi-intent tasks, writes `task-queue.json`    | `orchestrate.json`             |
-| `explore`               | discovery    | Maps file structure, naming conventions, component placement                   | `explore.json`                 |
-| `plan`                  | planning     | Designs approach, assigns write scopes to each implement cycle                 | `plan.json`                    |
-| `reproduce`             | diagnosis    | Reproduces failing behavior; identifies root cause before fix cycles begin     | `reproduce.json`               |
-| `implement-*`           | execution    | Writes source files within declared scope; reverts violations                  | `implement-<surface>.json`     |
-| `reconcile`             | verification | Cross-surface contract check, fills gap table, re-delegates gaps               | `reconcile[-<group>].json`     |
+| Cycle                   | Type         | What it does                                                                                 | Output file                  |
+| ----------------------- | ------------ | -------------------------------------------------------------------------------------------- | ---------------------------- |
+| `orchestrate`           | planning     | Routes prompt type, decomposes multi-intent tasks, writes `task-queue.json`                  | `orchestrate.json`           |
+| `explore`               | discovery    | Maps file structure, naming conventions, component placement                                 | `explore.json`               |
+| `plan`                  | planning     | Designs approach, assigns write scopes to each implement cycle                               | `plan.json`                  |
+| `reproduce`             | diagnosis    | Reproduces failing behavior; identifies root cause before fix cycles begin                   | `reproduce.json`             |
+| `implement-*`           | execution    | Writes source files within declared scope; reverts violations                                | `implement-<surface>.json`   |
+| `reconcile`             | verification | Cross-surface contract check, fills gap table, re-delegates gaps                             | `reconcile[-<group>].json`   |
 | `reconcile-cross-group` | verification | Multi-intent only — verifies shared contracts across all groups; may inject new cycle groups | `reconcile-cross-group.json` |
-| `test`                  | verification | Runs `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 retries | `test[-<group>].json`          |
-| `fix-*`                 | recovery     | Re-delegates broken surface to owning agent with exact error                   | injected dynamically           |
-| `recovery`              | recovery     | Reads prompt-orchestration.md after MAX_RETRIES exhausted; applies chaining    | injected dynamically           |
-| `deliver`               | delivery     | Unified summary, PR description, residual risks                                | `deliver.json`                 |
+| `test`                  | verification | Runs `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 retries                | `test[-<group>].json`        |
+| `fix-*`                 | recovery     | Re-delegates broken surface to owning agent with exact error                                 | injected dynamically         |
+| `recovery`              | recovery     | Reads prompt-orchestration.md after MAX_RETRIES exhausted; applies chaining                  | injected dynamically         |
+| `deliver`               | delivery     | Unified summary, PR description, residual risks                                              | `deliver.json`               |
 
 ---
 

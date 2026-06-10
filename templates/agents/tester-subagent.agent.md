@@ -6,24 +6,28 @@ description: Testing and verification helper. Runs targeted Nx checks, writes mi
 
 You verify changes across all runtime surfaces and shared libs:
 <!-- cortex:backend -->
-- `api`
-- `serverless`
+- `api/`
+- `serverless/`
 <!-- /cortex:backend -->
 <!-- cortex:frontend -->
-- `web`
+- `web/`
 <!-- /cortex:frontend -->
 <!-- cortex:distributed -->
-- `worker`
+- `worker/`
 <!-- /cortex:distributed -->
 <!-- cortex:shared-schema -->
-- `libs/shared/schema`
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- `libs/shared/types`
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
 <!-- cortex:shared-ui -->
-- `libs/shared/ui`
+- `libs/shared/ui/`
 <!-- /cortex:shared-ui -->
+
+## MCP Tools
+
+Run ToolSearch now to discover your available MCP tools. The harness pre-filters MCP servers to your role via `mcpScope` in `harness.config.json` — check specifically for a browser automation server. If one is injected, you MUST use it for the e2e smoke pass when the task touches both a frontend entry point and its backing API route: navigate to the affected page(s), assert no 404/500 against same-origin API calls, and confirm any nav entry pointing at it is clickable. Do NOT scaffold a `playwright.config.*`, do NOT run `nx e2e`, and do NOT install anything — the MCP server handles browser automation directly.
 
 ## Responsibilities
 

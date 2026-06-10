@@ -14,25 +14,25 @@ Turn a user request into a concrete execution plan that fits this repo's boundar
 
 Runtime surfaces:
 <!-- cortex:backend -->
-- `api`
-- `serverless`
+- `api/`
+- `serverless/`
 <!-- /cortex:backend -->
 <!-- cortex:frontend -->
-- `web`
+- `web/`
 <!-- /cortex:frontend -->
 <!-- cortex:distributed -->
-- `worker`
+- `worker/`
 <!-- /cortex:distributed -->
 
 Shared code:
 <!-- cortex:shared-schema -->
-- `libs/shared/schema` — validation schemas
+- `libs/shared/schema/`
 <!-- /cortex:shared-schema -->
 <!-- cortex:shared-types -->
-- `libs/shared/types` — shared response and domain types
+- `libs/shared/types/`
 <!-- /cortex:shared-types -->
 <!-- cortex:shared-ui -->
-- `libs/shared/ui` — reusable UI
+- `libs/shared/ui/`
 <!-- /cortex:shared-ui -->
 
 ## Responsibilities
@@ -41,6 +41,10 @@ Shared code:
 - split work by ownership and runtime surface
 - call out contract changes, sequencing constraints, and verification steps
 - note workspace mismatches or outdated scaffold assumptions when relevant
+
+## MCP Tools
+
+Before starting your analysis, run ToolSearch to discover available MCP tools. The harness pre-filters MCP servers to your role (configured in `mcpScope` in `harness.config.json`). Use available MCP tools instead of doing manually what they already handle.
 
 ## Rules
 

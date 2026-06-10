@@ -1,0 +1,149 @@
+---
+config:
+  layout: elk
+---
+%% Cortex Harness developer overview (ELK layout)
+%% Purpose: README-friendly overview with true auto-spacing and routing.
+
+flowchart LR
+  user(["1. User task"]) --> cli["2. CLI entry<br/>bin/cli.mjs"] --> runner["3. Autonomous runner<br/>src/run-autonomous.mjs"]
+  runner --> orchestrate["4.1 orchestrate.md<br/>routes the task"]
+  orchestrate --> skills[("4.2 skills.json<br/>matching skill output")]
+  orchestrate --> route{"4.3 Prompt type"}
+
+  route --> feature["4.4a implement-feature / edit-feature"]
+  route --> bug["4.4b fix-bug"]
+  route --> greenfield["4.4c create-app"]
+  route --> multi["4.4d multi-intent"]
+
+  feature --> queue_write["5.1 Orchestrate writes queue"]
+  bug --> queue_write
+  greenfield --> queue_write
+  multi --> queue_write
+
+  queue_write --> queue_file[("5. Task queue<br/>.harness/task-queue.json")]
+  queue_file --> queue_batch["5.2 Select next pending batch"] --> queue_parallel["5.3 Parallel-safety check"] --> queue_run["5.4 Dispatch batch to executor"]
+
+  queue_run --> cycle["6. Cycle executor<br/>runCycle / runCycleBatch"]
+  cycle --> llm["LLM subprocess<br/>claude -p / PowerShell wrapper"]
+  llm --> state[("7. Cycle state<br/>.harness/cycle-state/*.json")]
+  cycle --> runs[".harness/runs/*.jsonl<br/>run logs"]
+  cycle --> session[".harness/session.json<br/>session history"]
+  state --> delivery[/"10. Delivery summary<br/>.harness/output/delivery-*.md"/]
+
+  subgraph setup["A. Setup and configuration"]
+    init["A1. init / config / gitignore / notify"]
+    config[("harness.config.json<br/>paths and agent scopes")]
+    prompts[("Prompt templates<br/>.harness/prompts/*.md")]
+    agents[("Agent role files<br/>.harness/agents/*.agent.md")]
+    snapshot[("Pre-run snapshot<br/>capture of uncommitted work")]
+    init --> config --> snapshot
+    init --> prompts
+    init --> agents
+  end
+  cli -. setup commands .-> init
+  config --> runner
+  prompts --> cycle
+  agents --> cycle
+  snapshot --> runner
+
+  subgraph cycleTypes["6. Normal cycle families"]
+    reproduce["6.0 reproduce<br/>confirm bug"]
+    explore["6.1 explore<br/>read-only discovery"]
+    plan["6.2 plan<br/>ownership split"]
+    
+    subgraph singleIntent["Single-intent path"]
+      implement_single["6.3 implement-*<br/>code changes"]
+      reconcile_single["6.4 reconcile<br/>contracts and gaps"]
+      test_single["6.5 test<br/>verification checks"]
+      implement_single --> reconcile_single --> test_single
+    end
+    
+    subgraph multiIntent["Multi-intent path (groups)"]
+      implement_multi["6.3 implement-*<br/>per group"]
+      reconcile_multi["6.4 reconcile<br/>per group"]
+      test_multi["6.5 test<br/>per group"]
+      rcg["6.7 reconcile-cross-group<br/>verify shared contracts"]
+      implement_multi --> reconcile_multi --> test_multi --> rcg
+    end
+    
+    deliver["6.6 deliver<br/>final summary"]
+    
+    reproduce --> explore
+    explore --> plan
+    plan --> implement_single
+    plan --> implement_multi
+    test_single --> deliver
+    rcg --> deliver
+  end
+  queue_run --> reproduce
+  deliver --> delivery
+
+  subgraph ownership["B. Sub-agent ownership"]
+    explorer["B1. explorer-subagent"]
+    planner["B2. planner-subagent"]
+    backend["B3. backend-subagent"]
+    frontend["B4. frontend-subagent"]
+    distributed["B5. distributed-subagent"]
+    infra["B6. infra-subagent"]
+    tester["B7. tester-subagent"]
+    explore -. uses .-> explorer
+    plan -. uses .-> planner
+    implement -. delegates .-> backend
+    implement -. delegates .-> frontend
+    implement -. delegates .-> distributed
+    implement -. delegates .-> infra
+    test -. uses .-> tester
+  end
+
+  subgraph afterCycle["8. After each cycle"]
+    validate["8.1 Validate JSON output"]
+    mark["8.2 Persist status"]
+    scope["8.3 Scope guard"]
+    scopeUpdate["8.5 Auto-update agent scopes"]
+    notify["8.4 Notifications"]
+    validate --> mark --> scope --> scopeUpdate --> config
+    mark --> notify
+  end
+  cycle --> validate
+  scope --> queue_file
+
+  subgraph dynamic["9. Dynamic follow-up injection"]
+    failedTest_si{"9.1 Tests failed?<br/>(single-intent)"}
+    failedTest_mi{"9.1b Tests failed?<br/>(multi-intent)"}
+    fix["9.2 Fix retries"]
+    recovery["9.3 Recovery cycle"]
+    crossGroup{"9.4 Cross-group<br/>mismatch?<br/>(multi-intent only)"}
+    extraGroup["9.5 Additional group<br/>explore, implement, reconcile, test"]
+    cleanup["9.6 scope-cleanup"]
+    human["9.7 blocked<br/>needs human input"]
+    
+    failedTest_si --> fix
+    failedTest_si --> recovery
+    failedTest_mi --> fix
+    failedTest_mi --> recovery
+    crossGroup --> extraGroup
+    cleanup --> queue_batch
+    fix --> queue_batch
+    recovery --> queue_batch
+    extraGroup --> queue_batch
+  end
+  test_single --> failedTest_si
+  test_multi --> failedTest_mi
+  rcg --> crossGroup
+  scope --> cleanup
+  mark --> human
+
+  classDef entry fill:#0969da,stroke:#033d8b,color:#ffffff,stroke-width:2px;
+  classDef store fill:#fb8500,stroke:#d62828,color:#ffffff,stroke-width:2px;
+  classDef process fill:#2da44e,stroke:#1a7f37,color:#ffffff,stroke-width:2px;
+  classDef decision fill:#8957e5,stroke:#6e40c9,color:#ffffff,stroke-width:2px;
+  classDef agent fill:#1f6feb,stroke:#0969da,color:#ffffff,stroke-width:2px;
+  classDef warn fill:#da3633,stroke:#ae2a19,color:#ffffff,stroke-width:2px;
+
+  class user,cli entry;
+  class queue_file,state,delivery,config,prompts,agents,snapshot,skills store;
+  class runner,cycle,init,orchestrate,feature,bug,greenfield,multi,explore,plan,reproduce,implement,reconcile,test,deliver,validate,mark,scope,notify,fix,recovery,extraGroup,cleanup process;
+  class route,failedTest,crossGroup decision;
+  class explorer,planner,backend,frontend,distributed,infra,tester agent;
+  class human warn;

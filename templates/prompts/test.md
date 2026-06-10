@@ -4,6 +4,10 @@
 {{PRIOR_CONTEXT}}
 {{PRIOR_TEST_ATTEMPT}}
 
+## MCP Tools — check before running any steps
+
+Run ToolSearch now to discover your available MCP tools. The harness pre-filters servers to your role via `mcpScope` in `harness.config.json`. Check specifically for a browser automation MCP server — if one is injected, you MUST use it for the e2e smoke pass described in the Hard rules below. Do not scaffold a browser config or install anything; the MCP server handles it directly.
+
 ## Step 0 — Determine scope using Nx cache (free, always run first)
 
 Nx tracks cache per project per target using exact input hashes.
@@ -57,12 +61,12 @@ Skip for single-surface changes with no shared contract edits.
 - If a command times out, try once with `--forceExit --testTimeout=30000` then report as-is
 - e2e targets are out of scope unless the task explicitly touched UI-visible behavior
 - When the task touches BOTH a frontend entry point and its backing API route, run an
-  e2e smoke pass using the **Playwright MCP** (registered in `.mcp.json` during
-  `cortex-harness init` — always available in harness-initialized repos). Use MCP tool
-  calls to: navigate to the affected page(s), assert no 404/500 against same-origin
-  API calls, and confirm any nav entry pointing at it is clickable. This is the class
-  of bug static checks miss (registered-but-broken routes, disabled-but-navigable
-  links). Do NOT run `nx e2e`, do NOT scaffold a `playwright.config.*`, and do NOT
+  e2e smoke pass using the browser automation MCP server (identified in the MCP Tools
+  step above). Use MCP tool calls to: navigate to the affected page(s), assert no
+  404/500 against same-origin API calls, and confirm any nav entry pointing at it is
+  clickable. This catches the class of bug static checks miss — a fix that changes UI
+  but leaves the API call broken, or a route that is registered but never wired to a
+  nav entry. Do NOT run `nx e2e`, do NOT scaffold a `playwright.config.*`, and do NOT
   install anything — the MCP server handles browser automation directly.
 
 Write test report to: {{CYCLE_STATE_DIR}}/{{OUTPUT_FILE}}

@@ -19,6 +19,20 @@ const BUILTIN_TOOLS = new Set([
   "Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent",
   "WebFetch", "WebSearch", "NotebookEdit", "NotebookRead",
   "PowerShell", "TodoRead", "TodoWrite",
+  // Skill/tool infrastructure
+  "Skill", "ToolSearch",
+  // Task tracking
+  "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+  // Scheduling / cron
+  "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+  // Session / workspace modes
+  "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+  // Notifications and triggers
+  "PushNotification", "RemoteTrigger", "Monitor",
+  // MCP resource inspection (built-in, not an MCP server itself)
+  "ListMcpResourcesTool", "ReadMcpResourceTool",
+  // User interaction
+  "AskUserQuestion",
 ]);
 
 function extractToolCalls(runPath) {
@@ -168,10 +182,58 @@ function checkServer(name, serverConfig, timeoutMs = 15000) {
   });
 }
 
+// Simple Levenshtein distance for typo suggestions.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+function suggestCommand(input, choices) {
+  return choices
+    .map((c) => ({ c, d: levenshtein(input, c) }))
+    .sort((a, b) => a.d - b.d)[0];
+}
+
 export function registerMcpCommand(program) {
+  const SUB_COMMANDS = ["list", "check", "usage"];
+
   const mcpCmd = program
     .command("mcp")
-    .description("Show registered MCP servers and their usage in run logs");
+    .description("Manage and inspect MCP servers registered in .mcp.json")
+    .addHelpText("after", `
+Examples:
+  $ cortex-harness mcp                    Show servers and last-run tool usage
+  $ cortex-harness mcp list               List all registered MCP servers
+  $ cortex-harness mcp check              Verify each server responds (initialize handshake)
+  $ cortex-harness mcp usage              Show tool calls from the latest run log
+  $ cortex-harness mcp usage --run <ts>   Show tool calls from a specific run log
+
+Subcommands:
+  list    Print every server name, type, and command from .mcp.json
+  check   Spawn each server and send an MCP initialize handshake — reports latency and version
+  usage   Parse a .harness/runs/*.jsonl log and attribute tool calls to their MCP servers
+    `);
+
+  // ── unknown subcommand → suggest closest match ────────────────────────────
+  mcpCmd.on("command:*", (operands) => {
+    const input = operands[0];
+    const best = suggestCommand(input, SUB_COMMANDS);
+    console.error(chalk.red(`  Unknown mcp subcommand: "${input}"`));
+    if (best.d <= 3) {
+      console.log(chalk.yellow(`  Did you mean: ${chalk.bold(`cortex-harness mcp ${best.c}`)}`));
+    }
+    console.log(chalk.dim(`  Available subcommands: ${SUB_COMMANDS.join(", ")}`));
+    console.log(chalk.dim(`  Run "cortex-harness mcp --help" for usage.`));
+    process.exit(1);
+  });
 
   // ── default: servers + last run usage ────────────────────────────────────────
   mcpCmd.action(async () => {
@@ -182,7 +244,7 @@ export function registerMcpCommand(program) {
   // ── mcp list ─────────────────────────────────────────────────────────────────
   mcpCmd
     .command("list")
-    .description("List registered MCP servers from .mcp.json")
+    .description("List all MCP servers registered in .mcp.json (name, type, command)")
     .action(async () => {
       await showServers(process.cwd());
     });
@@ -190,7 +252,12 @@ export function registerMcpCommand(program) {
   // ── mcp check ────────────────────────────────────────────────────────────────
   mcpCmd
     .command("check")
-    .description("Verify each registered MCP server responds to the initialize handshake")
+    .description("Spawn each MCP server and verify it responds to the initialize handshake")
+    .addHelpText("after", `
+  Spawns every server listed in .mcp.json, sends an MCP initialize request,
+  and reports whether it responded, its protocol version, and startup latency.
+  Useful for confirming a server is installed and reachable before a harness run.
+    `)
     .action(async () => {
       await showCheck(process.cwd());
     });
@@ -198,11 +265,20 @@ export function registerMcpCommand(program) {
   // ── mcp usage ────────────────────────────────────────────────────────────────
   mcpCmd
     .command("usage")
-    .description("Show MCP tool calls from a run log")
+    .description("Show MCP tool calls from a harness run log, attributed per server")
+    .addHelpText("after", `
+  Reads .harness/runs/<timestamp>.jsonl and groups every tool call by MCP server.
+  Built-in Claude Code tools (Read, Edit, Bash, etc.) are shown separately.
+  Tool calls that don't match any registered server are flagged as unregistered.
+
+  Examples:
+    $ cortex-harness mcp usage                   Inspect the latest run
+    $ cortex-harness mcp usage --run 2024-01-15  Inspect a specific run
+    `)
     .addOption(
       new Option(
         "--run <timestamp>",
-        "Specific run timestamp to inspect (filename without .jsonl)",
+        "Run timestamp to inspect (filename in .harness/runs/ without .jsonl extension)",
       ).default(null),
     )
     .action(async (options) => {

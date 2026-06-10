@@ -2,6 +2,10 @@
 
 {{AGENT_ROLE}}
 
+## MCP Tools
+
+Run ToolSearch now to discover your available MCP tools. The harness pre-filters servers to your role via `mcpScope` in `harness.config.json`. Use any available tools instead of doing manually what they already handle.
+
 Produce a concrete implementation plan. This is READ-ONLY — do not write any production code.
 {{PRIOR_CONTEXT}}
 

@@ -3,6 +3,9 @@
 {{AGENT_ROLE}}
 {{PRIOR_CONTEXT}}
 
+## MCP Tools — MANDATORY before any file edits
+Run ToolSearch now to discover your available MCP tools. The harness has pre-filtered them to your agent role via `mcpScope` in `harness.config.json` — only the servers your role needs are injected. Use them instead of doing manually what they already handle. This check is required; skipping it and then doing work an MCP could have done is a process violation.
+
 Task context: {{USER_TASK}}
 
 If prior-cycle reports in your context claim a file or feature is "already implemented" or

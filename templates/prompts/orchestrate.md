@@ -19,7 +19,7 @@ Violating any of the above means you have failed this cycle. The only tools you 
    - Write output to: {{CYCLE_STATE_DIR}}/skills.json
      Format: { "invoked": ["skill-name", ...], "output": { "skill-name": "<one-line summary>" } }
    - If no skills match: write { "invoked": [], "output": {} } — marks Step 0 complete, not skipped
-   Implement cycles will read this file as their ## Skill guidance — do not leave it unwritten.
+   Implement cycles will read this file as their ## Skill guidance — do not leave it unwritten. A missing skills.json means every implement cycle runs without skill output, which is a hard gate failure.
 
 3. Pre-process the task text before routing:
    - Tasks often start with pasted context before the actual instructions: JSON error objects, stack traces, log lines, HTTP responses, code snippets, or any other raw output.
@@ -96,7 +96,7 @@ Violating any of the above means you have failed this cycle. The only tools you 
       "id":         "<unique id — for grouped cycles include slug, e.g. explore-fix-login>",
       "type":       "<explore|plan|reproduce|implement-backend|implement-frontend|implement-distributed|implement-infra|reconcile|test|deliver>",
       "status":     "pending",
-      "agent":      "<agent name for implement types, e.g. backend-subagent>",
+      "agent":      "<implement types: backend-subagent | frontend-subagent | distributed-subagent | infra-subagent — test cycles: always tester-subagent — all other types: omit>",
       "outputFile": "<filename in cycle-state/ — include slug for grouped, e.g. explore-fix-login.json>",
       "parallel":   false,
       "taskGroup":  "<group slug for multi-intent cycles, e.g. fix-login — omit for single-intent and shared cycles>",
@@ -117,6 +117,7 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - reconcile runs before test
 - test runs before deliver
 - deliver is always last
+- test cycles MUST set `"agent": "tester-subagent"` — the engine uses this to inject the correct MCP servers; omitting it leaves the test cycle with no MCP tools
 - implement cycles with non-overlapping write scopes may set parallel: true
 - multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
 - multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before deliver
