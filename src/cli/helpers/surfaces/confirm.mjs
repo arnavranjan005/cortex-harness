@@ -1,11 +1,11 @@
 import chalk from "chalk";
 
 // Prompts user to confirm or override each detected surface. Returns confirmed surface map.
-export async function confirmSurfaces(detected, rl) {
+export async function confirmSurfaces(detected, rl, opts = {}) {
   const isNx = detected !== null;
   const d = detected ?? {};
 
-  if (!process.stdin.isTTY) {
+  if (opts.yes || !process.stdin.isTTY) {
     return {
       backend: d.backend ?? [],
       frontend: d.frontend ?? [],

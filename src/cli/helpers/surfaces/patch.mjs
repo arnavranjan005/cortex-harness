@@ -72,22 +72,34 @@ export async function patchAgentScopes(agentsDir, surfaces) {
 // Writes confirmed surface paths into harness.config.json and patches agent md files.
 export async function applySurfaces(configPath, surfaces, agentsDir) {
   const config = await fs.readJson(configPath);
+  const agents = config.agents ?? {};
+  let changed = false;
 
-  config.agents["backend-subagent"].scope = [
-    ...surfaces.backend,
-    ...surfaces.sharedSchema,
-    ...surfaces.sharedTypes,
-  ].filter(Boolean);
+  if (agents["backend-subagent"]) {
+    agents["backend-subagent"].scope = [
+      ...surfaces.backend,
+      ...surfaces.sharedSchema,
+      ...surfaces.sharedTypes,
+    ].filter(Boolean);
+    changed = true;
+  }
 
-  config.agents["frontend-subagent"].scope = [
-    ...surfaces.frontend,
-    ...surfaces.sharedUi,
-  ].filter(Boolean);
+  if (agents["frontend-subagent"]) {
+    agents["frontend-subagent"].scope = [
+      ...surfaces.frontend,
+      ...surfaces.sharedUi,
+    ].filter(Boolean);
+    changed = true;
+  }
 
-  config.agents["distributed-subagent"].scope = [
-    ...surfaces.distributed,
-  ].filter(Boolean);
+  if (agents["distributed-subagent"]) {
+    agents["distributed-subagent"].scope = [
+      ...surfaces.distributed,
+    ].filter(Boolean);
+    changed = true;
+  }
 
+  if (!changed) return;
   await fs.writeJson(configPath, config, { spaces: 2 });
 
   if (agentsDir && (await fs.pathExists(agentsDir))) {
