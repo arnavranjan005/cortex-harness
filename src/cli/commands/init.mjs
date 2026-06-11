@@ -11,6 +11,7 @@ import {
   confirmSurfaces,
   applySurfaces,
 } from "../helpers/surfaces.mjs";
+import { detectDevServerConfig } from "../../engine/process-utils.mjs";
 
 // ctx: { pkgRoot, pkgVersion }
 export function registerInitCommand(program, ctx) {
@@ -209,6 +210,45 @@ export function registerInitCommand(program, ctx) {
           console.log(`\n  ${chalk.yellow("!")} These paths don't exist yet:`);
           missing.forEach((p) => console.log(`      ${chalk.yellow(p)}`));
         }
+      }
+
+      // 10. Dev server auto-detection
+      console.log("\n" + line);
+      console.log(chalk.bold("  Dev server configuration"));
+      console.log(line);
+      const detectedDs = detectDevServerConfig(process.cwd());
+
+      if (detectedDs) {
+        console.log(`  ${chalk.dim("Auto-detected services:")}`);
+        detectedDs.services.forEach((svc, i) => {
+          console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
+          console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+          if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+        });
+        console.log(`    ${chalk.dim(`browser: ${detectedDs.browserUrl}`)}`);
+
+        let accept = true;
+        if (!opts.yes) {
+          const ans = await rl.question(`\n  Write devServer to harness.config.json? ${chalk.dim("[Y/n]")} `);
+          accept = !ans.trim() || ans.trim().toLowerCase() === "y";
+        }
+
+        if (accept && await fs.pathExists(configPath)) {
+          const cfg = await fs.readJson(configPath);
+          cfg.devServer = {
+            browserUrl: detectedDs.browserUrl,
+            startupTimeoutMs: detectedDs.startupTimeoutMs,
+            services: detectedDs.services,
+          };
+          await fs.writeJson(configPath, cfg, { spaces: 2 });
+          console.log(`\n  ${chalk.green("✓")} devServer written to harness.config.json`);
+        } else if (!accept) {
+          console.log(`  ${chalk.dim("Skipped — configure devServer manually in harness.config.json if needed")}`);
+        }
+      } else {
+        console.log(
+          `  ${chalk.dim("No framework detected — configure devServer manually in harness.config.json if needed")}`,
+        );
       }
 
       rl.close();
