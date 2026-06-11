@@ -247,7 +247,8 @@ Current cycle: ${cycle.id}`;
       .replace(/\{\{CYCLE_OUTPUTS\}\}/g, assembleCycleOutputs())
       .replace(/\{\{TEST_FAILURE_DETAILS\}\}/g, testFailureDetails)
       .replace(/\{\{PRIOR_TEST_ATTEMPT\}\}/g, priorTestAttempt)
-      .replace(/\{\{MAX_RETRIES\}\}/g, String(MAX_RETRIES));
+      .replace(/\{\{MAX_RETRIES\}\}/g, String(MAX_RETRIES))
+      .replace(/\{\{DEV_SERVER_URL\}\}/g, cycle.devServerUrl ?? "");
 
     return templateContent;
   }

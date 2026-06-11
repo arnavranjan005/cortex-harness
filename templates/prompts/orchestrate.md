@@ -93,12 +93,13 @@ Violating any of the above means you have failed this cycle. The only tools you 
   ],
   "cycles": [
     {
-      "id":         "<unique id — for grouped cycles include slug, e.g. explore-fix-login>",
-      "type":       "<explore|plan|reproduce|implement-backend|implement-frontend|implement-distributed|implement-infra|reconcile|test|deliver>",
-      "status":     "pending",
-      "agent":      "<implement types: backend-subagent | frontend-subagent | distributed-subagent | infra-subagent — test cycles: always tester-subagent — all other types: omit>",
-      "outputFile": "<filename in cycle-state/ — include slug for grouped, e.g. explore-fix-login.json>",
-      "parallel":   false,
+      "id":           "<unique id — for grouped cycles include slug, e.g. explore-fix-login>",
+      "type":         "<explore|plan|reproduce|implement-backend|implement-frontend|implement-distributed|implement-infra|reconcile|test|smoke|deliver>",
+      "status":       "pending",
+      "agent":        "<implement types: backend-subagent | frontend-subagent | distributed-subagent | infra-subagent — test cycles: always tester-subagent — smoke and all other types: omit>",
+      "needsDevServer": "<true for smoke cycles only — omit for all other types>",
+      "outputFile":   "<filename in cycle-state/ — include slug for grouped, e.g. explore-fix-login.json>",
+      "parallel":     false,
       "taskGroup":  "<group slug for multi-intent cycles, e.g. fix-login — omit for single-intent and shared cycles>",
       "subTask":    "<the sub-task text for this group — omit for single-intent and shared cycles>",
       "notes":      "<why this cycle is included>"
@@ -115,12 +116,36 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - fix-bug reproduce cycle runs BEFORE explore (typecheck + tests first, per fix-bug Step 1)
 - all implement cycles run before reconcile
 - reconcile runs before test
-- test runs before deliver
+- test runs before smoke (when smoke is present)
+- smoke runs before deliver (when smoke is present)
 - deliver is always last
 - test cycles MUST set `"agent": "tester-subagent"` — the engine uses this to inject the correct MCP servers; omitting it leaves the test cycle with no MCP tools
+- smoke cycles MUST set `"needsDevServer": true` — the engine starts the configured dev server before the cycle runs; omit agent (the engine uses cycle type "smoke" to scope playwright MCP)
 - implement cycles with non-overlapping write scopes may set parallel: true
 - multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
-- multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before deliver
+- multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before smoke cycles
 - multi-intent: within a group, the same ordering rules apply as for single-intent
+
+## Smoke cycle — when and how to emit
+
+Emit a smoke cycle after the test cycle **only for groups that include an implement-frontend cycle**.
+Do NOT emit smoke for backend-only, infra-only, or distributed-only groups.
+
+```json
+{
+  "id": "smoke-<group>",
+  "type": "smoke",
+  "status": "pending",
+  "needsDevServer": true,
+  "outputFile": "smoke-<group>.json",
+  "parallel": false,
+  "taskGroup": "<group slug>",
+  "subTask": "<sub-task text>",
+  "notes": "Browser smoke pass: navigate affected pages, assert no 404/500, check same-origin API calls"
+}
+```
+
+For single-intent tasks with a frontend implement cycle, the smoke id is simply `"smoke"` with `outputFile: "smoke.json"` (no group suffix needed).
+If `devServer` is not configured in `harness.config.json`, the smoke cycle will auto-skip — it is still safe to emit.
 
 Task: {{USER_TASK}}

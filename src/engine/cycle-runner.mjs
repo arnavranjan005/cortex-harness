@@ -2,6 +2,8 @@ import chalk from "chalk";
 import { spawn, execSync } from "child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
+import http from "http";
+import https from "https";
 import {
   isWindows,
   DEAD_MAN_MS,
@@ -83,6 +85,61 @@ export function createCycleRunner({
   appendLog,
   notify,
 }) {
+  // Poll a URL until it responds with a non-5xx status or the timeout expires.
+  function pollReadiness(url, timeoutMs) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const mod = url.startsWith("https") ? https : http;
+      function attempt() {
+        if (Date.now() >= deadline) { resolve(false); return; }
+        const req = mod.get(url, (res) => { res.resume(); resolve(res.statusCode < 500); });
+        req.setTimeout(2000, () => { req.destroy(); setTimeout(attempt, 2000); });
+        req.on("error", () => setTimeout(attempt, 2000));
+      }
+      attempt();
+    });
+  }
+
+  // Start the configured dev server and wait for it to be ready.
+  // Returns { proc, url } on success, { proc: null, url: "" } on timeout/misconfiguration.
+  // If the URL is already responding (server already running), returns proc: null so we don't kill it.
+  async function startDevServer(dsConfig) {
+    if (!dsConfig?.command || !dsConfig?.readinessUrl) return { proc: null, url: "" };
+
+    const readinessUrl = dsConfig.readinessUrl;
+    const timeoutMs = dsConfig.startupTimeoutMs ?? 90_000;
+
+    // Already running? Use it without spawning a new one.
+    if (await pollReadiness(readinessUrl, 3_000)) {
+      console.log(`  ${chalk.dim("[DEV SERVER]")} Already running at ${readinessUrl}`);
+      return { proc: null, url: readinessUrl };
+    }
+
+    console.log(`  ${chalk.dim("[DEV SERVER]")} Starting: ${dsConfig.command}`);
+    let proc;
+    if (isWindows) {
+      proc = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", dsConfig.command],
+        { cwd: ROOT, stdio: "ignore" },
+      );
+    } else {
+      const parts = dsConfig.command.split(/\s+/);
+      proc = spawn(parts[0], parts.slice(1), { cwd: ROOT, stdio: "ignore" });
+    }
+    proc.on("error", () => {});
+
+    const ready = await pollReadiness(readinessUrl, timeoutMs);
+    if (!ready) {
+      console.log(`  ${chalk.yellow("[DEV SERVER]")} Did not become ready within ${timeoutMs / 1000}s — smoke will skip`);
+      killProc(proc);
+      return { proc: null, url: "" };
+    }
+
+    console.log(`  ${chalk.dim("[DEV SERVER]")} Ready at ${readinessUrl}`);
+    return { proc, url: readinessUrl };
+  }
+
   // Request a short progress summary from Claude when a cycle hits the turn cap.
   async function requestTurnCapSummary(cycleId, assistantLog) {
     const messages =
@@ -142,7 +199,16 @@ Reply with only the summary, no preamble.`;
   }
 
   async function runCycle(cycle, remainingBudgetUsd) {
-    const prompt = buildCyclePrompt(cycle);
+    // Start dev server before building the prompt so {{DEV_SERVER_URL}} can be substituted.
+    let devServerProc = null;
+    let devServerUrl = "";
+    if (cycle.needsDevServer && config.devServer) {
+      const result = await startDevServer(config.devServer);
+      devServerProc = result.proc;
+      devServerUrl = result.url;
+    }
+
+    const prompt = buildCyclePrompt(devServerUrl ? { ...cycle, devServerUrl } : cycle);
 
     return new Promise((resolve) => {
       let turnCount = 0;
@@ -236,12 +302,10 @@ Reply with only the summary, no preamble.`;
 
       const budgetArg = String(Math.max(0.5, Number(remainingBudgetUsd.toFixed(2))));
 
-      const agentName = cycle.agent ?? null;
-      // Always filter — null agentName falls back to "*" global scope only.
-      // Without this, cycles with no agent (explore, plan, reconcile, test, deliver)
-      // skip the temp file entirely and Claude falls back to the full .mcp.json,
-      // giving every cycle all MCP servers regardless of mcpScope config.
-      const filteredServers = buildFilteredMcpServers(agentName);
+      // Use agent name if set; fall back to cycle type so type-keyed mcpScope entries
+      // (e.g. "smoke": ["playwright"]) work without needing a sub-agent file.
+      const mcpKey = cycle.agent ?? cycle.type ?? null;
+      const filteredServers = buildFilteredMcpServers(mcpKey);
       let tmpMcpPath = null;
       if (filteredServers !== null) {
         tmpMcpPath = join(HARNESS_DIR, `tmp-mcp-${cycle.id}.json`);
@@ -468,6 +532,7 @@ Reply with only the summary, no preamble.`;
       });
 
       proc.on("close", (code) => {
+        if (devServerProc) killProc(devServerProc);
         clearTimeout(resultGraceTimer);
         if (turnCapKilled) return;
         const effectiveMessage = finalMessage || rawText;
