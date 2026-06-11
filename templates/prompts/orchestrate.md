@@ -97,7 +97,6 @@ Violating any of the above means you have failed this cycle. The only tools you 
       "type":         "<explore|plan|reproduce|implement-backend|implement-frontend|implement-distributed|implement-infra|reconcile|test|smoke|deliver>",
       "status":       "pending",
       "agent":        "<implement types: backend-subagent | frontend-subagent | distributed-subagent | infra-subagent — test cycles: always tester-subagent — smoke and all other types: omit>",
-      "needsDevServer": "<true for smoke cycles only — omit for all other types>",
       "outputFile":   "<filename in cycle-state/ — include slug for grouped, e.g. explore-fix-login.json>",
       "parallel":     false,
       "taskGroup":  "<group slug for multi-intent cycles, e.g. fix-login — omit for single-intent and shared cycles>",
@@ -120,7 +119,7 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - smoke runs before deliver (when smoke is present)
 - deliver is always last
 - test cycles MUST set `"agent": "tester-subagent"` — the engine uses this to inject the correct MCP servers; omitting it leaves the test cycle with no MCP tools
-- smoke cycles MUST set `"needsDevServer": true` — the engine starts the configured dev server before the cycle runs; omit agent (the engine uses cycle type "smoke" to scope playwright MCP)
+- smoke cycles: omit `agent` — the engine uses cycle type "smoke" to scope playwright MCP; the engine auto-starts the dev server because playwright is a browser MCP
 - implement cycles with non-overlapping write scopes may set parallel: true
 - multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
 - multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before smoke cycles
@@ -136,7 +135,6 @@ Do NOT emit smoke for backend-only, infra-only, or distributed-only groups.
   "id": "smoke-<group>",
   "type": "smoke",
   "status": "pending",
-  "needsDevServer": true,
   "outputFile": "smoke-<group>.json",
   "parallel": false,
   "taskGroup": "<group slug>",

@@ -12,8 +12,8 @@ Use exactly these sections:
 Do not forward raw cycle reports. Do not omit any residual risk.
 
 **Smoke gate — check before writing the summary:**
-Scan all cycle outputs for any file named `smoke.json` or matching `smoke-*.json`.
-If any smoke output has `"passed": false` AND `"skipped"` is not `true`:
+In the cycle outputs below, find any section labeled `smoke.json` or `smoke-*.json`.
+If any such section has `"passed": false` AND `"skipped"` is not `true`:
 1. Do NOT write a normal delivery summary
 2. Write only a **Smoke failures** section listing every entry from that cycle's `failures[]` array
 3. Mark each as: `NEEDS_HUMAN_INPUT — smoke failure on <page>: <issue>`
