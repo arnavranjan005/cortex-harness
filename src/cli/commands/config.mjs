@@ -8,6 +8,24 @@ import {
   printScopeTable,
   printMcpScopeTable,
 } from "../helpers/harness-config.mjs";
+import { detectDevServerConfig } from "../../engine/process-utils.mjs";
+
+function printDevServerTable(config) {
+  const ds = config.devServer;
+  if (!ds || !Array.isArray(ds.services) || !ds.services.length) {
+    console.log(chalk.dim("  devServer: (not configured)"));
+    return;
+  }
+  console.log(chalk.bold("  Dev server"));
+  console.log(`  ${"command".padEnd(52)} ${"readinessUrl".padEnd(30)} cwd`);
+  console.log("  " + "─".repeat(90));
+  for (const svc of ds.services) {
+    const cmd = svc.command.length > 50 ? svc.command.slice(0, 47) + "..." : svc.command;
+    console.log(`  ${cmd.padEnd(52)} ${svc.readinessUrl.padEnd(30)} ${svc.cwd ?? ""}`);
+  }
+  console.log(`  ${chalk.dim("browser:")} ${ds.browserUrl}   ${chalk.dim("timeout:")} ${(ds.startupTimeoutMs ?? 120000) / 1000}s`);
+  console.log();
+}
 
 export function registerConfigCommand(program) {
   const configCmd = program
@@ -32,6 +50,7 @@ export function registerConfigCommand(program) {
     console.log("  What do you want to edit?");
     console.log("    [1] Agent file scopes");
     console.log("    [2] MCP server scope (which servers each agent can use)");
+    console.log("    [3] Dev server services");
     console.log("    [0] Exit\n");
 
     let dirty = false;
@@ -91,6 +110,40 @@ export function registerConfigCommand(program) {
         }
       }
       printMcpScopeTable(config);
+    } else if (topIdx === 3) {
+      printDevServerTable(config);
+      console.log("    [1] Auto-detect from project");
+      console.log("    [2] Clear dev server config");
+      console.log("    [0] Back\n");
+      const dsChoice = await rl.question("  > ");
+      if (dsChoice.trim() === "1") {
+        const detected = detectDevServerConfig(process.cwd());
+        if (!detected) {
+          console.log(chalk.yellow("  No framework detected in this project."));
+        } else {
+          console.log(`\n  ${chalk.dim("Detected services:")}`);
+          detected.services.forEach((svc, i) => {
+            console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
+            console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+            if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+          });
+          console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}`);
+          const ans = await rl.question(`\n  Apply to harness.config.json? ${chalk.dim("[Y/n]")} `);
+          if (!ans.trim() || ans.trim().toLowerCase() === "y") {
+            config.devServer = {
+              browserUrl: detected.browserUrl,
+              startupTimeoutMs: detected.startupTimeoutMs,
+              services: detected.services,
+            };
+            dirty = true;
+            console.log(chalk.green("  ✓ devServer updated"));
+          }
+        }
+      } else if (dsChoice.trim() === "2") {
+        delete config.devServer;
+        dirty = true;
+        console.log(chalk.green("  ✓ devServer cleared"));
+      }
     }
 
     rl.close();
@@ -229,5 +282,60 @@ export function registerConfigCommand(program) {
       await saveHarnessConfig(configPath, config);
       console.log(chalk.green(`  ✓ Removed "${serverName}" from ${agent}'s MCP scope`));
       printMcpScopeTable(config);
+    });
+
+  // `cortex-harness config dev-server` subcommand tree
+  const dsCmd = configCmd
+    .command("dev-server")
+    .description("View and configure the devServer section of harness.config.json");
+
+  // bare `cortex-harness config dev-server` → print current config
+  dsCmd.action(async () => {
+    const { config } = await loadHarnessConfig(process.cwd());
+    printDevServerTable(config);
+  });
+
+  // `cortex-harness config dev-server detect` → auto-detect and write
+  dsCmd
+    .command("detect")
+    .description("Auto-detect dev server services from the project and write to harness.config.json")
+    .action(async () => {
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      const detected = detectDevServerConfig(process.cwd());
+      if (!detected) {
+        console.log(chalk.yellow("  No framework detected in this project."));
+        console.log(chalk.dim("  Configure devServer manually in harness.config.json if needed."));
+        process.exit(0);
+      }
+      console.log(`\n  ${chalk.dim("Detected services:")}`);
+      detected.services.forEach((svc, i) => {
+        console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
+        console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+        if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+      });
+      console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
+
+      config.devServer = {
+        browserUrl: detected.browserUrl,
+        startupTimeoutMs: detected.startupTimeoutMs,
+        services: detected.services,
+      };
+      await saveHarnessConfig(configPath, config);
+      console.log(chalk.green("  ✓ devServer written to harness.config.json"));
+    });
+
+  // `cortex-harness config dev-server clear` → remove devServer from config
+  dsCmd
+    .command("clear")
+    .description("Remove the devServer section from harness.config.json")
+    .action(async () => {
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      if (!config.devServer) {
+        console.log(chalk.dim("  devServer is not configured — nothing to clear."));
+        process.exit(0);
+      }
+      delete config.devServer;
+      await saveHarnessConfig(configPath, config);
+      console.log(chalk.green("  ✓ devServer removed from harness.config.json"));
     });
 }
