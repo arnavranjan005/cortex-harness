@@ -23,7 +23,7 @@ describe('readBlockedTypes', () => {
     const dir = makeTmpDir('blocked-nofile');
     try {
       const result = readBlockedTypes(join(dir, 'task-queue.json'));
-      expect(result).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false });
+      expect(result).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -34,7 +34,7 @@ describe('readBlockedTypes', () => {
     try {
       const queueFile = join(dir, 'task-queue.json');
       writeFileSync(queueFile, 'not-json');
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -49,7 +49,7 @@ describe('readBlockedTypes', () => {
           { id: 'c2', type: 'implement-backend', status: 'pending' },
         ],
       });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -64,7 +64,7 @@ describe('readBlockedTypes', () => {
           { id: 'c2', type: 'implement-backend', status: 'blocked', blockedType: 'needs-human-input' },
         ],
       });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: true, hasSessionLimit: false });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: true, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -79,7 +79,26 @@ describe('readBlockedTypes', () => {
           { id: 'c2', type: 'implement-backend', status: 'blocked', blockedType: 'session-limit' },
         ],
       });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: false, hasSessionLimit: true });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: false, hasSessionLimit: true, sessionLimitReason: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('returns sessionLimitReason from blockedReason when present', () => {
+    const dir = makeTmpDir('blocked-session-reason');
+    try {
+      const queueFile = writeQueue(dir, {
+        cycles: [
+          { id: 'c1', type: 'implement-backend', status: 'blocked', blockedType: 'session-limit', blockedReason: 'session/weekly limit hit — resets 6/10/2026, 9:50:00 PM' },
+        ],
+      });
+      expect(readBlockedTypes(queueFile)).toEqual({
+        hasAny: true,
+        hasHumanInput: false,
+        hasSessionLimit: true,
+        sessionLimitReason: 'session/weekly limit hit — resets 6/10/2026, 9:50:00 PM',
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -94,7 +113,7 @@ describe('readBlockedTypes', () => {
           { id: 'c2', type: 'implement-frontend', status: 'blocked', blockedType: 'session-limit' },
         ],
       });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: true, hasSessionLimit: true });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: true, hasHumanInput: true, hasSessionLimit: true, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -109,7 +128,7 @@ describe('readBlockedTypes', () => {
           { id: 'c1', type: 'implement-backend', status: 'done', blockedType: 'needs-human-input' },
         ],
       });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -119,7 +138,7 @@ describe('readBlockedTypes', () => {
     const dir = makeTmpDir('blocked-nocycles');
     try {
       const queueFile = writeQueue(dir, { task: 'hello' });
-      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false });
+      expect(readBlockedTypes(queueFile)).toEqual({ hasAny: false, hasHumanInput: false, hasSessionLimit: false, sessionLimitReason: null });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

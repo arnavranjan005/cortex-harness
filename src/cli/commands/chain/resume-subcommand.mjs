@@ -163,10 +163,11 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
         const midBlocked = readBlockedTypes(queueFile);
 
         let runExitCode;
-        if (midBlocked.hasSessionLimit && !midBlocked.hasHumanInput) {
-          console.log(chalk.dim("  Session-limit block detected — auto-resuming...\n"));
-          await resumeBlockedCycles(cwd);
-          runExitCode = await spawnResumedRun(cwd, pkgRoot);
+        if (midBlocked.hasSessionLimit) {
+          console.log(chalk.red("  Run hit session limit. Stopping chain — limit has not reset yet."));
+          if (midBlocked.sessionLimitReason) console.log(chalk.dim(`  ${midBlocked.sessionLimitReason}`));
+          console.log(chalk.dim("  Run: cortex-harness chain resume  (after your limit resets)"));
+          break;
         } else if (midBlocked.hasHumanInput) {
           console.log(chalk.yellow("  Human input required — collecting answers...\n"));
           await resumeBlockedCycles(cwd);

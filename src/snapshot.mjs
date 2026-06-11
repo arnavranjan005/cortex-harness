@@ -13,7 +13,7 @@
  *   const restored = snap.restoreFromSnapshot(filePath);
  */
 
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join, relative } from "path";
 
 export function createSnapshotManager({
@@ -87,14 +87,31 @@ export function createSnapshotManager({
     } catch {
       return;
     }
-    if (!dirty.length) return;
+
     // Exclude the snapshot dir itself — its blobs are harness internals, not user files
     const snapshotRelDir = relative(root, snapshotDir).replace(/\\/g, "/");
     dirty = dirty.filter((f) => !f.replace(/\\/g, "/").startsWith(snapshotRelDir + "/"));
+
+    // Prune stale blobs — files no longer dirty have no business being in the snapshot
+    const dirtySet = new Set(dirty.map((f) => f.replace(/\\/g, "/")));
+    const index = readIndex();
+    let pruned = 0;
+    for (const key of Object.keys(index)) {
+      if (!dirtySet.has(key.replace(/\\/g, "/"))) {
+        const blob = join(snapshotDir, index[key].blobFile);
+        try {
+          if (existsSync(blob)) unlinkSync(blob);
+        } catch { /* best-effort */ }
+        delete index[key];
+        pruned++;
+      }
+    }
+    if (pruned) writeIndex(index);
+
     if (!dirty.length) return;
     captureFiles(dirty);
     console.log(
-      `\n  ${chalk.dim("[SNAPSHOT]")} captured ${dirty.length} uncommitted file(s) before run start`,
+      `\n  ${chalk.dim("[SNAPSHOT]")} captured ${dirty.length} uncommitted file(s) before run start${pruned ? chalk.dim(` (pruned ${pruned} stale)`) : ""}`,
     );
   }
 

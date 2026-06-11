@@ -95,20 +95,22 @@ export function registerChainCommand(program, ctx) {
         const deliveryBeforeRun = await findLatestDelivery(cwd);
         const existingBlocked = readBlockedTypes(queueFile);
 
+        if (existingBlocked.hasSessionLimit) {
+          console.log(chalk.red("  Blocked queue detected (session limit). Stopping chain — limit has not reset yet."));
+          if (existingBlocked.sessionLimitReason) console.log(chalk.dim(`  ${existingBlocked.sessionLimitReason}`));
+          console.log(chalk.dim("  Run: cortex-harness chain resume  (after your limit resets)"));
+          break;
+        }
+
         const shouldResume =
           existingBlocked.hasAny &&
-          (existingBlocked.hasSessionLimit ||
-            (existingBlocked.hasHumanInput && options.resumeOnBlock));
+          (existingBlocked.hasHumanInput && options.resumeOnBlock);
 
         let exitCode;
         if (shouldResume) {
-          if (existingBlocked.hasHumanInput) {
-            console.log(
-              chalk.yellow("  Blocked queue detected (needs human input) — collecting answers...\n"),
-            );
-          } else {
-            console.log(chalk.dim("  Blocked queue detected (session limit) — auto-resuming...\n"));
-          }
+          console.log(
+            chalk.yellow("  Blocked queue detected (needs human input) — collecting answers...\n"),
+          );
           const resumeResult = await resumeBlockedCycles(cwd);
           if (resumeResult === "nothing-blocked") {
             console.log(chalk.yellow("  No blocked cycles found — unexpected state. Stopping chain."));
@@ -151,15 +153,21 @@ export function registerChainCommand(program, ctx) {
         if (!deliveryPath || deliveryPath === deliveryBeforeRun) {
           const midRunBlocked = readBlockedTypes(queueFile);
 
-          const canAutoResume = midRunBlocked.hasSessionLimit && !midRunBlocked.hasHumanInput;
-          const canInteractiveResume = midRunBlocked.hasHumanInput && options.resumeOnBlock;
-
           if (!midRunBlocked.hasAny) {
             console.log(
               chalk.yellow("  Run did not produce a new delivery and no blocked cycles found (aborted). Stopping chain."),
             );
             break;
-          } else if (!canAutoResume && !canInteractiveResume) {
+          }
+
+          if (midRunBlocked.hasSessionLimit) {
+            console.log(chalk.red("  Run hit session limit. Stopping chain — limit has not reset yet."));
+            if (midRunBlocked.sessionLimitReason) console.log(chalk.dim(`  ${midRunBlocked.sessionLimitReason}`));
+            console.log(chalk.dim("  Run: cortex-harness chain resume  (after your limit resets)"));
+            break;
+          }
+
+          if (!midRunBlocked.hasHumanInput || !options.resumeOnBlock) {
             console.log(chalk.yellow("  Run was blocked (needs human input). Stopping chain."));
             console.log(
               chalk.dim("  Re-run with --resume-on-block to answer inline, or: cortex-harness resume"),
@@ -167,11 +175,7 @@ export function registerChainCommand(program, ctx) {
             break;
           }
 
-          if (midRunBlocked.hasHumanInput) {
-            console.log(chalk.yellow("\n  Run was blocked — collecting answers to continue chain...\n"));
-          } else {
-            console.log(chalk.dim("\n  Run hit session limit — auto-resuming...\n"));
-          }
+          console.log(chalk.yellow("\n  Run was blocked — collecting answers to continue chain...\n"));
           const resumeResult = await resumeBlockedCycles(cwd);
           if (resumeResult === "nothing-blocked") {
             console.log(chalk.yellow("  No blocked cycles found — unexpected state. Stopping chain."));
