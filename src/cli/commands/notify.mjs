@@ -1,7 +1,5 @@
 import path from "path";
 import { spawn } from "child_process";
-import { createInterface } from "readline/promises";
-import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
 import {
   createEmptyNotificationConfig,
@@ -14,6 +12,15 @@ import {
 } from "../../notification-config.mjs";
 import { sendWindowsNotification } from "../../notifications/notification-windows.mjs";
 import { sendDiscordNotification } from "../../notifications/notify-discord.mjs";
+import {
+  intro,
+  outro,
+  note,
+  log,
+  spinner,
+  confirm,
+  text,
+} from "../helpers/ui.mjs";
 
 // ctx: { pkgRoot }
 export function registerNotifySetupCommand(program) {
@@ -23,15 +30,14 @@ export function registerNotifySetupCommand(program) {
       "Interactive wizard to configure notification channels (Windows toast, Discord webhook)",
     )
     .action(async () => {
-      const rl = createInterface({ input, output });
-
-      console.log("\n" + chalk.bold("Notification channel setup"));
-      console.log(chalk.dim(`Config file: ${NOTIFICATION_CONFIG_FILE}\n`));
+      intro(chalk.bold.cyan("Notification channel setup"));
+      log.message(chalk.dim(`Config file: ${NOTIFICATION_CONFIG_FILE}`));
 
       const state = readNotificationConfig();
       if (!state.valid) {
-        console.log(chalk.red(`  Existing config is invalid: ${state.error}`));
-        console.log(chalk.yellow("  It will be overwritten if you proceed.\n"));
+        log.warn(
+          `Existing config is invalid: ${state.error}\nIt will be overwritten if you proceed.`,
+        );
       }
 
       const config =
@@ -43,80 +49,84 @@ export function registerNotifySetupCommand(program) {
       // ── Windows ──────────────────────────────────────────────────────────────
       const windowsEnabled = config.channels?.windows?.enabled;
       if (process.platform === "win32") {
-        const current = windowsEnabled
-          ? chalk.green("currently enabled")
-          : chalk.dim("currently disabled");
-        const answer = await rl.question(
-          `  Set up Windows toast notifications? (${current}) [y/N]: `,
-        );
-        if (
-          answer.trim().toLowerCase() === "y" ||
-          answer.trim().toLowerCase() === "yes"
-        ) {
-          console.log("  Sending test toast...");
+        const setup = await confirm({
+          message: `Set up Windows toast notifications? (currently ${windowsEnabled ? "enabled" : "disabled"})`,
+          initialValue: false,
+        });
+        if (setup) {
+          const s = spinner();
+          s.start("Sending test toast");
           const result = await sendWindowsNotification({
             title: "Claude Harness",
             message: "Notification setup test",
           });
           if (!result.ok) {
-            console.log(chalk.red(`  Toast failed: ${result.error}`));
-            console.log(
-              chalk.yellow("  Windows notifications were NOT enabled.\n"),
-            );
+            s.stop("Toast failed", 1);
+            log.error(result.error);
+            log.warn("Windows notifications were NOT enabled.");
           } else {
+            s.stop("Test toast sent");
             config.channels.windows = { enabled: true };
             dirty = true;
-            console.log(chalk.green("  ✓ Windows notifications enabled.\n"));
+            log.success("Windows notifications enabled.");
           }
         } else if (windowsEnabled) {
-          const disable = await rl.question(
-            "  Disable Windows notifications? [y/N]: ",
-          );
-          if (disable.trim().toLowerCase() === "y") {
+          const disable = await confirm({
+            message: "Disable Windows notifications?",
+            initialValue: false,
+          });
+          if (disable) {
             config.channels.windows = { enabled: false };
             dirty = true;
-            console.log(chalk.yellow("  Windows notifications disabled.\n"));
+            log.warn("Windows notifications disabled.");
           }
         }
       } else {
-        console.log(
-          chalk.dim("  Windows notifications: not available on this platform.\n"),
+        log.message(
+          chalk.dim("Windows notifications: not available on this platform."),
         );
       }
 
       // ── Discord ───────────────────────────────────────────────────────────────
       const existing = getDiscordRegistrations(config);
       if (existing.length) {
-        console.log("  Registered Discord channels:");
-        existing.forEach((r, i) =>
-          console.log(
-            `    ${i + 1}. ${r.label ?? r.id} — ${r.enabled ? chalk.green("enabled") : chalk.dim("disabled")} (${redactWebhook(r.webhookUrl)})`,
-          ),
+        note(
+          existing
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.label ?? r.id} — ${r.enabled ? chalk.green("enabled") : chalk.dim("disabled")} (${redactWebhook(r.webhookUrl)})`,
+            )
+            .join("\n"),
+          "Registered Discord channels",
         );
-        console.log();
       }
 
-      const addDiscord = await rl.question(
-        "  Add a Discord webhook channel? [y/N]: ",
-      );
-      if (
-        addDiscord.trim().toLowerCase() === "y" ||
-        addDiscord.trim().toLowerCase() === "yes"
-      ) {
-        const labelInput = await rl.question(
-          "  Display name for this channel (e.g. ops, alerts): ",
-        );
+      const addDiscord = await confirm({
+        message: "Add a Discord webhook channel?",
+        initialValue: false,
+      });
+      if (addDiscord) {
+        const labelInput = await text({
+          message: "Display name for this channel",
+          placeholder: "e.g. ops, alerts",
+        });
         const label =
-          labelInput.trim() || `discord-${Date.now().toString().slice(-4)}`;
-        const webhookInput = await rl.question("  Discord webhook URL: ");
+          (labelInput ?? "").trim() ||
+          `discord-${Date.now().toString().slice(-4)}`;
+        const webhookInput = await text({
+          message: "Discord webhook URL",
+          validate: (v) => {
+            const res = validateDiscordWebhookUrl(v);
+            return res.valid ? undefined : res.error;
+          },
+        });
         const validation = validateDiscordWebhookUrl(webhookInput);
         if (!validation.valid) {
-          console.log(chalk.red(`  Invalid URL: ${validation.error}`));
-          console.log(chalk.yellow("  Discord channel was NOT added.\n"));
+          log.error(`Invalid URL: ${validation.error}`);
+          log.warn("Discord channel was NOT added.");
         } else {
-          console.log(
-            `  Sending test message to ${label} (${redactWebhook(validation.webhookUrl)})...`,
-          );
+          const s = spinner();
+          s.start(`Sending test message to ${label}`);
           try {
             await sendDiscordNotification({
               webhookUrl: validation.webhookUrl,
@@ -124,13 +134,12 @@ export function registerNotifySetupCommand(program) {
               message: "Notification setup test",
               meta: { task: "Notification channel verification" },
             });
-            const confirm = await rl.question(
-              "  Test message sent. Enable this channel? [y/N]: ",
-            );
-            if (
-              confirm.trim().toLowerCase() === "y" ||
-              confirm.trim().toLowerCase() === "yes"
-            ) {
+            s.stop(`Test message sent (${redactWebhook(validation.webhookUrl)})`);
+            const enable = await confirm({
+              message: "Enable this channel?",
+              initialValue: false,
+            });
+            if (enable) {
               const registrations = getDiscordRegistrations(config);
               registrations.push({
                 id: `${label}-${registrations.length + 1}`,
@@ -140,36 +149,28 @@ export function registerNotifySetupCommand(program) {
               });
               config.channels.discord = registrations;
               dirty = true;
-              console.log(chalk.green(`  ✓ Discord channel "${label}" added.\n`));
+              log.success(`Discord channel "${label}" added.`);
             } else {
-              console.log(chalk.dim("  Discord channel not saved.\n"));
+              log.message(chalk.dim("Discord channel not saved."));
             }
           } catch (err) {
-            console.log(chalk.red(`  Discord test failed: ${err.message}`));
-            console.log(chalk.yellow("  Channel was NOT added.\n"));
+            s.stop("Discord test failed", 1);
+            log.error(err.message);
+            log.warn("Channel was NOT added.");
           }
         }
       }
 
-      rl.close();
-
       if (dirty) {
         writeNotificationConfig(config);
-        console.log(
-          chalk.green(`\n  ✓ Config saved to ${NOTIFICATION_CONFIG_FILE}`),
-        );
+        log.success(`Config saved to ${NOTIFICATION_CONFIG_FILE}`);
       } else {
-        console.log(chalk.dim("\n  No changes made."));
+        log.message(chalk.dim("No changes made."));
       }
 
-      console.log(
+      outro(
         chalk.dim(
-          "\n  Run `cortex-harness notify list` to review registered channels.",
-        ),
-      );
-      console.log(
-        chalk.dim(
-          "  Run `cortex-harness notify-setup` again to add more channels.\n",
+          "`cortex-harness notify list` to review channels · `notify-setup` to add more",
         ),
       );
     });

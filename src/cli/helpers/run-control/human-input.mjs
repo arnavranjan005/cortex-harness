@@ -1,8 +1,7 @@
 import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
-import { createInterface } from "readline/promises";
-import { stdin as input, stdout as output } from "process";
+import { text } from "../ui.mjs";
 
 // Collect human answers for blocked cycles and mark them pending.
 // Does NOT spawn the engine — caller decides what to do next.
@@ -99,13 +98,11 @@ export async function resumeBlockedCycles(cwd) {
     }
 
     console.log();
-    const rl = createInterface({ input, output });
-    let userAnswer = "";
-    try {
-      userAnswer = (await rl.question(chalk.bold("  Your answer: "))).trim();
-    } finally {
-      rl.close();
-    }
+    const answer = await text({
+      message: "Your answer",
+      placeholder: "Type your response, then Enter",
+    });
+    const userAnswer = (answer ?? "").trim();
     console.log();
 
     decisions.push({

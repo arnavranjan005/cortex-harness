@@ -1,7 +1,5 @@
 import fs from "fs-extra";
 import path from "path";
-import { createInterface } from "readline/promises";
-import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
 import { mergeMcpConfig, autoScopeMcpServers } from "../helpers/mcp-config.mjs";
 import { patchGitignore } from "../helpers/gitignore.mjs";
@@ -12,6 +10,7 @@ import {
   applySurfaces,
 } from "../helpers/surfaces.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
+import { intro, outro, log, note, confirm } from "../helpers/ui.mjs";
 
 // ctx: { pkgRoot, pkgVersion }
 export function registerInitCommand(program, ctx) {
@@ -26,26 +25,17 @@ export function registerInitCommand(program, ctx) {
       const targetClaudeDir = path.join(process.cwd(), ".claude");
       const templatesDir = path.join(ctx.pkgRoot, "templates");
 
-      const rl = createInterface({ input, output });
-
-      const W = Math.min(process.stdout.columns || 72, 72);
-      const line = chalk.dim("─".repeat(W));
-
-      console.log();
-      console.log(
-        chalk.bold.cyan("  cortex-harness") +
-          chalk.dim(` v${ctx.pkgVersion}  —  init`),
-      );
-      console.log(line);
-
-      function section(label) {
-        console.log("\n" + chalk.bold(`  ${label}`));
-      }
-
+      // Copy helpers prompt through clack now — no readline interface needed.
+      const rl = null;
       const copyOpts = { yes: !!opts.yes };
 
+      intro(
+        chalk.bold.cyan("cortex-harness") +
+          chalk.dim(` v${ctx.pkgVersion} · init`),
+      );
+
       // 1. Prompts
-      section("Scaffolding prompts");
+      log.step("Scaffolding prompts");
       await copyDir(
         path.join(templatesDir, "prompts"),
         path.join(targetHarnessDir, "prompts"),
@@ -55,7 +45,7 @@ export function registerInitCommand(program, ctx) {
       );
 
       // 2. Agents
-      section("Scaffolding agents");
+      log.step("Scaffolding agents");
       await copyDir(
         path.join(templatesDir, "agents"),
         path.join(targetHarnessDir, "agents"),
@@ -66,7 +56,7 @@ export function registerInitCommand(program, ctx) {
 
       // 3. Memory
       if (await fs.pathExists(path.join(templatesDir, "memory"))) {
-        section("Scaffolding memory");
+        log.step("Scaffolding memory");
         await copyDir(
           path.join(templatesDir, "memory"),
           path.join(targetHarnessDir, "memory"),
@@ -78,7 +68,7 @@ export function registerInitCommand(program, ctx) {
 
       // 4. Scripts
       if (await fs.pathExists(path.join(templatesDir, "scripts"))) {
-        section("Scaffolding scripts");
+        log.step("Scaffolding scripts");
         await fs.ensureDir(path.join(targetHarnessDir, "scripts"));
         await copyDir(
           path.join(templatesDir, "scripts"),
@@ -90,7 +80,7 @@ export function registerInitCommand(program, ctx) {
       }
 
       // 5. .claude/settings.json — always merge hooks, never prompt (additive only)
-      section("Wiring Claude hooks");
+      log.step("Wiring Claude hooks");
       await fs.ensureDir(targetClaudeDir);
       const settingsPath = path.join(targetClaudeDir, "settings.json");
       const settingsTemplatePath = path.join(
@@ -104,19 +94,17 @@ export function registerInitCommand(program, ctx) {
           const existing = await fs.readJson(settingsPath);
           existing.hooks = { ...existing.hooks, ...templateSettings.hooks };
           await fs.writeJson(settingsPath, existing, { spaces: 2 });
-          console.log(
-            `  ${chalk.yellow("↑")} ${chalk.dim(".claude/settings.json")}  ${chalk.dim("(merged harness hooks)")}`,
+          log.message(
+            `${chalk.yellow("↑")} ${chalk.dim(".claude/settings.json")}  ${chalk.dim("(merged harness hooks)")}`,
           );
         } else {
           await fs.writeJson(settingsPath, templateSettings, { spaces: 2 });
-          console.log(
-            `  ${chalk.green("+")} ${chalk.dim(".claude/settings.json")}`,
-          );
+          log.message(`${chalk.green("+")} ${chalk.dim(".claude/settings.json")}`);
         }
       }
 
       // 6. harness.config.json + CLAUDE.md — root config files
-      section("Writing root config files");
+      log.step("Writing root config files");
       const configPath = path.join(process.cwd(), "harness.config.json");
       const configTemplatePath = path.join(templatesDir, "harness.config.json");
       if (await fs.pathExists(configTemplatePath)) {
@@ -127,7 +115,7 @@ export function registerInitCommand(program, ctx) {
           rl,
           copyOpts,
         );
-        console.log(`  ${fileIcon(status)} ${chalk.dim("harness.config.json")}`);
+        log.message(`${fileIcon(status)} ${chalk.dim("harness.config.json")}`);
       }
 
       const claudeMdPath = path.join(process.cwd(), "CLAUDE.md");
@@ -140,15 +128,15 @@ export function registerInitCommand(program, ctx) {
           rl,
           copyOpts,
         );
-        console.log(`  ${fileIcon(status)} ${chalk.dim("CLAUDE.md")}`);
+        log.message(`${fileIcon(status)} ${chalk.dim("CLAUDE.md")}`);
       }
 
       // 7. .gitignore
       {
         const result = await patchGitignore(process.cwd());
-        const note = result === "present" ? chalk.dim("  (already present)") : "";
-        console.log(
-          `  ${fileIcon(result === "present" ? "kept" : result === "appended" ? "updated" : "created")} ${chalk.dim(".gitignore")}${note}`,
+        const note_ = result === "present" ? chalk.dim("  (already present)") : "";
+        log.message(
+          `${fileIcon(result === "present" ? "kept" : result === "appended" ? "updated" : "created")} ${chalk.dim(".gitignore")}${note_}`,
         );
       }
 
@@ -163,7 +151,7 @@ export function registerInitCommand(program, ctx) {
         };
         const label = mcpLabels[mcpStatus];
         if (label) {
-          console.log(`  ${fileIcon(label.icon)} ${chalk.dim(".mcp.json")}${label.note}`);
+          log.message(`${fileIcon(label.icon)} ${chalk.dim(".mcp.json")}${label.note}`);
         }
 
         // Auto-scope known servers into matching agents' mcpScope
@@ -171,17 +159,15 @@ export function registerInitCommand(program, ctx) {
         if (added.length && (await fs.pathExists(configPath))) {
           const autoScoped = await autoScopeMcpServers(configPath, added);
           for (const { server, agents } of autoScoped) {
-            console.log(
-              `  ${chalk.green("↑")} ${chalk.dim(`mcpScope: ${server} → ${agents.join(", ")}`)}`,
+            log.message(
+              `${chalk.green("↑")} ${chalk.dim(`mcpScope: ${server} → ${agents.join(", ")}`)}`,
             );
           }
         }
       }
 
       // 9. Surface configuration
-      console.log("\n" + line);
-      console.log(chalk.bold("  Surface configuration"));
-      console.log(line);
+      log.step("Surface configuration");
       const detected = await detectSurfaces(process.cwd());
       const surfaces = await confirmSurfaces(detected, rl, copyOpts);
 
@@ -191,49 +177,48 @@ export function registerInitCommand(program, ctx) {
           surfaces,
           path.join(targetHarnessDir, "agents"),
         );
-        console.log(`\n  ${chalk.green("✓")} harness.config.json updated`);
-        console.log(
-          `  ${chalk.green("✓")} .harness/agents/*.agent.md scope sections patched`,
-        );
+        log.success("harness.config.json updated");
+        log.success(".harness/agents/*.agent.md scope sections patched");
       }
 
       const allEmpty = Object.values(surfaces).every((v) => v.length === 0);
       if (allEmpty) {
-        console.log(
-          `\n  ${chalk.yellow("!")} No surfaces configured — edit harness.config.json before running`,
-        );
+        log.warn("No surfaces configured — edit harness.config.json before running");
       } else {
         const missing = Object.entries(surfaces)
           .flatMap(([, paths]) => paths)
           .filter((p) => !fs.pathExistsSync(path.join(process.cwd(), p)));
         if (missing.length) {
-          console.log(`\n  ${chalk.yellow("!")} These paths don't exist yet:`);
-          missing.forEach((p) => console.log(`      ${chalk.yellow(p)}`));
+          log.warn(
+            "These paths don't exist yet:\n" +
+              missing.map((p) => `  ${chalk.yellow(p)}`).join("\n"),
+          );
         }
       }
 
       // 10. Dev server auto-detection
-      console.log("\n" + line);
-      console.log(chalk.bold("  Dev server configuration"));
-      console.log(line);
+      log.step("Dev server configuration");
       const detectedDs = detectDevServerConfig(process.cwd());
 
       if (detectedDs) {
-        console.log(`  ${chalk.dim("Auto-detected services:")}`);
-        detectedDs.services.forEach((svc, i) => {
-          console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
-          console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
-          if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+        const lines = detectedDs.services.map((svc, i) => {
+          const parts = [`${chalk.cyan(`[${i + 1}]`)} ${svc.command}`];
+          parts.push(`    ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+          if (svc.cwd) parts.push(`    ${chalk.dim("cwd:")}   ${svc.cwd}`);
+          return parts.join("\n");
         });
-        console.log(`    ${chalk.dim(`browser: ${detectedDs.browserUrl}`)}`);
+        lines.push(chalk.dim(`browser: ${detectedDs.browserUrl}`));
+        note(lines.join("\n"), "Auto-detected services");
 
         let accept = true;
         if (!opts.yes) {
-          const ans = await rl.question(`\n  Write devServer to harness.config.json? ${chalk.dim("[Y/n]")} `);
-          accept = !ans.trim() || ans.trim().toLowerCase() === "y";
+          accept = await confirm({
+            message: "Write devServer to harness.config.json?",
+            initialValue: true,
+          });
         }
 
-        if (accept && await fs.pathExists(configPath)) {
+        if (accept && (await fs.pathExists(configPath))) {
           const cfg = await fs.readJson(configPath);
           cfg.devServer = {
             browserUrl: detectedDs.browserUrl,
@@ -241,32 +226,28 @@ export function registerInitCommand(program, ctx) {
             services: detectedDs.services,
           };
           await fs.writeJson(configPath, cfg, { spaces: 2 });
-          console.log(`\n  ${chalk.green("✓")} devServer written to harness.config.json`);
+          log.success("devServer written to harness.config.json");
         } else if (!accept) {
-          console.log(`  ${chalk.dim("Skipped — configure devServer manually in harness.config.json if needed")}`);
+          log.message(
+            chalk.dim("Skipped — configure devServer manually in harness.config.json if needed"),
+          );
         }
       } else {
-        console.log(
-          `  ${chalk.dim("No framework detected — configure devServer manually in harness.config.json if needed")}`,
+        log.message(
+          chalk.dim("No framework detected — configure devServer manually in harness.config.json if needed"),
         );
       }
 
-      rl.close();
+      // Next steps
+      note(
+        [
+          `${chalk.dim("1.")} Review ${chalk.cyan("harness.config.json")} — scope paths are set to your surfaces`,
+          `${chalk.dim("2.")} Review ${chalk.cyan(".harness/agents/*.agent.md")} — Scope sections have been auto-patched`,
+          `${chalk.dim("3.")} Run: ${chalk.cyan('cortex-harness run "your task description"')}`,
+        ].join("\n"),
+        "Next steps",
+      );
 
-      // Success footer
-      console.log("\n" + line);
-      console.log(chalk.green.bold("  ✓ Harness initialized successfully"));
-      console.log(line);
-      console.log(chalk.bold("\n  Next steps\n"));
-      console.log(
-        `  ${chalk.dim("1.")} Review ${chalk.cyan("harness.config.json")} — scope paths are set to your surfaces`,
-      );
-      console.log(
-        `  ${chalk.dim("2.")} Review ${chalk.cyan(".harness/agents/*.agent.md")} — Scope sections have been auto-patched`,
-      );
-      console.log(
-        `  ${chalk.dim("3.")} Run: ${chalk.cyan('cortex-harness run "your task description"')}`,
-      );
-      console.log();
+      outro(chalk.green.bold("✓ Harness initialized successfully"));
     });
 }
