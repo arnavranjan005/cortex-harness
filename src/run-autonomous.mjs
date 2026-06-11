@@ -644,8 +644,9 @@ async function main() {
         }
 
       } else if (result.signal !== "complete") {
+        const isHardError = result.signal === "error";
         const effectiveMaxRetriesErr = getEffectiveMaxRetries(cycle, result.finalMessage, result.signal);
-        if (attempt < effectiveMaxRetriesErr) {
+        if (!isHardError && attempt < effectiveMaxRetriesErr) {
           console.log(
             `  ${chalk.yellow(`[${result.signal.toUpperCase()} → retry ${attempt + 1}/${effectiveMaxRetriesErr}]`)} ${chalk.cyan(cycle.id)}`,
           );
@@ -654,11 +655,15 @@ async function main() {
           });
         } else {
           cycle.status = "blocked";
-          cycle.blockedReason = `${result.signal} after ${attempt} attempts`;
+          cycle.blockedReason = isHardError
+            ? `spawn error: ${result.error ?? result.finalMessage}`
+            : `${result.signal} after ${attempt} attempts`;
           writeQueue(queue);
           appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
           console.log(
-            `\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} ${result.signal} — ${attempt} attempts exhausted.`,
+            isHardError
+              ? `\n${chalk.red.bold("[ERROR]")} ${chalk.cyan(cycle.id)} failed to spawn — stopping run.`
+              : `\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} ${result.signal} — ${attempt} attempts exhausted.`,
           );
           notify("Claude — Cycle Failed", `${cycle.id} | ${result.signal}`);
           shouldBreak = true;
