@@ -1,10 +1,9 @@
 import fs from "fs-extra";
 import path from "path";
 import { spawn } from "child_process";
-import { createInterface } from "readline/promises";
-import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
 import { resumeBlockedCycles } from "../helpers/run-control.mjs";
+import { confirm } from "../helpers/ui.mjs";
 
 // ctx: { pkgRoot }
 export function registerResumeCommand(program, ctx) {
@@ -39,17 +38,12 @@ export function registerResumeCommand(program, ctx) {
 
       // Ask whether to start the run
       console.log();
-      const rlRun = createInterface({ input, output });
-      let startRun = "y";
-      try {
-        startRun =
-          (await rlRun.question(chalk.bold("  Start run now? [Y/n]: ")))
-            .trim()
-            .toLowerCase() || "y";
-      } finally {
-        rlRun.close();
-      }
-      if (startRun === "n" || startRun === "no") {
+      const startRun = await confirm({
+        message: "Start run now?",
+        initialValue: true,
+        fallback: true,
+      });
+      if (!startRun) {
         console.log(
           chalk.dim("\n  Run skipped. Start manually with: cortex-harness run"),
         );

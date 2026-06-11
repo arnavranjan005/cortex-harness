@@ -1,5 +1,3 @@
-import { createInterface } from 'readline/promises';
-import { stdin as input, stdout as output } from 'process';
 import {
   createEmptyNotificationConfig,
   NOTIFICATION_CONFIG_FILE,
@@ -10,6 +8,7 @@ import {
 } from '../notification-config.mjs';
 import { sendDiscordNotification } from './notify-discord.mjs';
 import { sendWindowsNotification } from './notification-windows.mjs';
+import { confirm as uiConfirm, text as uiText } from '../cli/helpers/ui.mjs';
 
 function printHelp() {
   console.log('Harness notification channels');
@@ -71,24 +70,12 @@ function setDiscordRegistrations(config, registrations) {
 }
 
 async function confirm(question) {
-  const rl = createInterface({ input, output });
-  try {
-    const answer = (await rl.question(`${question} [y/N]: `))
-      .trim()
-      .toLowerCase();
-    return answer === 'y' || answer === 'yes';
-  } finally {
-    rl.close();
-  }
+  return uiConfirm({ message: question, initialValue: false });
 }
 
 async function prompt(question) {
-  const rl = createInterface({ input, output });
-  try {
-    return (await rl.question(question)).trim();
-  } finally {
-    rl.close();
-  }
+  const answer = await uiText({ message: question.replace(/:\s*$/, "") });
+  return (answer ?? "").trim();
 }
 
 async function registerWindows() {

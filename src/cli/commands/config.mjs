@@ -1,5 +1,3 @@
-import { createInterface } from "readline/promises";
-import { stdin as input, stdout as output } from "process";
 import chalk from "chalk";
 import {
   loadHarnessConfig,
@@ -9,6 +7,7 @@ import {
   printMcpScopeTable,
 } from "../helpers/harness-config.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
+import { select, text, confirm, log } from "../helpers/ui.mjs";
 
 function printDevServerTable(config) {
   const ds = config.devServer;
@@ -37,7 +36,6 @@ export function registerConfigCommand(program) {
   // bare `cortex-harness config` → interactive wizard
   configCmd.action(async () => {
     const { config, configPath } = await loadHarnessConfig(process.cwd());
-    const rl = createInterface({ input, output });
 
     printScopeTable(config);
 
@@ -47,76 +45,84 @@ export function registerConfigCommand(program) {
         !["explorer-subagent", "planner-subagent", "tester-subagent"].includes(a),
     );
 
-    console.log("  What do you want to edit?");
-    console.log("    [1] Agent file scopes");
-    console.log("    [2] MCP server scope (which servers each agent can use)");
-    console.log("    [3] Dev server services");
-    console.log("    [0] Exit\n");
-
     let dirty = false;
-    const topChoice = await rl.question("  > ");
-    const topIdx = parseInt(topChoice, 10);
+    const top = await select({
+      message: "What do you want to edit?",
+      options: [
+        { value: "scopes", label: "Agent file scopes" },
+        { value: "mcp", label: "MCP server scope", hint: "which servers each agent can use" },
+        { value: "devserver", label: "Dev server services" },
+        { value: "exit", label: "Exit" },
+      ],
+      initialValue: "scopes",
+      fallback: "exit",
+    });
 
-    if (topIdx === 1) {
-      console.log("\n  Which agent scope do you want to edit?");
-      editable.forEach((a, i) => console.log(`    [${i + 1}] ${a}`));
-      console.log("    [0] Back\n");
-
+    if (top === "scopes") {
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        const choice = await rl.question("  > ");
-        const idx = parseInt(choice, 10);
-        if (!choice.trim() || idx === 0) break;
-        if (isNaN(idx) || idx < 1 || idx > editable.length) {
-          console.log(
-            chalk.yellow(`  Enter a number between 0 and ${editable.length}`),
-          );
-          continue;
-        }
-        const agent = editable[idx - 1];
+        const agent = await select({
+          message: "Which agent scope do you want to edit?",
+          options: [
+            ...editable.map((a) => ({ value: a, label: a })),
+            { value: "__back", label: "← Back" },
+          ],
+          fallback: "__back",
+        });
+        if (agent === "__back") break;
         const current = (config.agents[agent]?.scope || []).join(", ");
-        const raw = await rl.question(
-          `  ${chalk.cyan(agent)} scope ${chalk.dim(`[${current || "none"}]`)}: `,
-        );
-        if (raw.trim()) {
-          config.agents[agent].scope = raw
+        const raw = await text({
+          message: `${agent} scope`,
+          placeholder: "comma-separated paths",
+          initialValue: current,
+        });
+        const trimmed = (raw ?? "").trim();
+        if (trimmed && trimmed !== current) {
+          config.agents[agent].scope = trimmed
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean);
-          console.log(chalk.green(`  ✓ Updated`));
+          log.success(`Updated ${agent}`);
           dirty = true;
         }
         printScopeTable(config);
-        editable.forEach((a, i) => console.log(`    [${i + 1}] ${a}`));
-        console.log("    [0] Back\n");
       }
-    } else if (topIdx === 2) {
+    } else if (top === "mcp") {
       if (!config.mcpScope) config.mcpScope = {};
       printMcpScopeTable(config);
       const scopeKeys = ["*", ...agents];
-      console.log("  Which key to edit? (enter agent name or * for all agents)");
-      console.log(chalk.dim("  Comma-separated server names from .mcp.json — leave blank to skip\n"));
 
       for (const key of scopeKeys) {
         const current = (config.mcpScope[key] ?? []).join(", ");
         const label = key === "*" ? "* (all agents)" : key;
-        const raw = await rl.question(
-          `  ${chalk.cyan(label)} ${chalk.dim(`[${current || "none"}]`)}: `,
-        );
-        if (raw.trim()) {
-          config.mcpScope[key] = raw.split(",").map((s) => s.trim()).filter(Boolean);
-          console.log(chalk.green(`  ✓ Updated`));
+        const raw = await text({
+          message: `${label} — server names from .mcp.json`,
+          placeholder: "comma-separated, blank to skip",
+          initialValue: current,
+        });
+        const trimmed = (raw ?? "").trim();
+        if (trimmed && trimmed !== current) {
+          config.mcpScope[key] = trimmed
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          log.success(`Updated ${label}`);
           dirty = true;
         }
       }
       printMcpScopeTable(config);
-    } else if (topIdx === 3) {
+    } else if (top === "devserver") {
       printDevServerTable(config);
-      console.log("    [1] Auto-detect from project");
-      console.log("    [2] Clear dev server config");
-      console.log("    [0] Back\n");
-      const dsChoice = await rl.question("  > ");
-      if (dsChoice.trim() === "1") {
+      const dsChoice = await select({
+        message: "Dev server",
+        options: [
+          { value: "detect", label: "Auto-detect from project" },
+          { value: "clear", label: "Clear dev server config" },
+          { value: "back", label: "← Back" },
+        ],
+        fallback: "back",
+      });
+      if (dsChoice === "detect") {
         const detected = detectDevServerConfig(process.cwd());
         if (!detected) {
           console.log(chalk.yellow("  No framework detected in this project."));
@@ -127,26 +133,28 @@ export function registerConfigCommand(program) {
             console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
             if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
           });
-          console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}`);
-          const ans = await rl.question(`\n  Apply to harness.config.json? ${chalk.dim("[Y/n]")} `);
-          if (!ans.trim() || ans.trim().toLowerCase() === "y") {
+          console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
+          const apply = await confirm({
+            message: "Apply to harness.config.json?",
+            initialValue: true,
+          });
+          if (apply) {
             config.devServer = {
               browserUrl: detected.browserUrl,
               startupTimeoutMs: detected.startupTimeoutMs,
               services: detected.services,
             };
             dirty = true;
-            console.log(chalk.green("  ✓ devServer updated"));
+            log.success("devServer updated");
           }
         }
-      } else if (dsChoice.trim() === "2") {
+      } else if (dsChoice === "clear") {
         delete config.devServer;
         dirty = true;
-        console.log(chalk.green("  ✓ devServer cleared"));
+        log.success("devServer cleared");
       }
     }
 
-    rl.close();
     if (dirty) {
       await saveHarnessConfig(configPath, config);
       await repatchFromConfig(process.cwd(), config);
