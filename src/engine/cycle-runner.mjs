@@ -8,6 +8,7 @@ import {
   RESULT_GRACE_MS,
   MAX_RETRIES,
   TEST_MAX_RETRIES_CLEAN,
+  SMOKE_MAX_RETRIES_CLEAN,
   getTurnCap,
 } from "./constants.mjs";
 import { pollReadiness, detectDevServerConfig, startDevServer } from "./process-utils.mjs";
@@ -32,11 +33,13 @@ const CLAUDE_EXE = resolveClaudeExe();
 // Test cycles use a generous cap when the failure is a clean turn-cap partial;
 // rate-limit and other error types fall back to MAX_RETRIES.
 function getEffectiveMaxRetries(cycle, reason, signal, rawMessage = "", { CYCLE_DIR }) {
-  if (cycle.type !== "test") return MAX_RETRIES;
+  if (cycle.type !== "test" && cycle.type !== "smoke") return MAX_RETRIES;
   const textToCheck = (reason ?? "") + " " + rawMessage;
   const isApiRateLimit =
     textToCheck.includes("rate-limit") || textToCheck.includes("rate limit");
   if (isApiRateLimit) return MAX_RETRIES;
+
+  const cleanCap = cycle.type === "smoke" ? SMOKE_MAX_RETRIES_CLEAN : TEST_MAX_RETRIES_CLEAN;
 
   if (signal === "failed" || signal === "hung") {
     if (cycle.outputFile) {
@@ -44,13 +47,13 @@ function getEffectiveMaxRetries(cycle, reason, signal, rawMessage = "", { CYCLE_
         const outputPath = join(CYCLE_DIR, cycle.outputFile);
         const data = JSON.parse(readFileSync(outputPath, "utf8"));
         if (data.partial === true && String(data.partialReason ?? "").includes("turn-cap")) {
-          return TEST_MAX_RETRIES_CLEAN;
+          return cleanCap;
         }
       } catch { /* output file missing or unreadable — fall through */ }
     }
     return MAX_RETRIES;
   }
-  return TEST_MAX_RETRIES_CLEAN;
+  return cleanCap;
 }
 
 // MCP server names that drive a real browser — presence means the cycle needs a running app.

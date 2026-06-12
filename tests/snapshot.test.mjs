@@ -225,7 +225,7 @@ test('refreshSnapshot: refreshes non-implement cycle types too', () => {
   }
 });
 
-test('refreshSnapshot: skips cycles without an agent', () => {
+test('refreshSnapshot: skips non-reconcile cycles without an agent', () => {
   const root = makeTmpDir();
   const snapshotDir = join(root, '.harness', 'snapshot');
   try {
@@ -245,6 +245,91 @@ test('refreshSnapshot: skips cycles without an agent', () => {
     const timeBefore = snap.readIndex()['api/x.ts']?.capturedAt;
     snap.refreshSnapshot({ id: 'explore-g1', type: 'explore', agent: null, outputFile: 'explore.json' });
     const timeAfter = snap.readIndex()['api/x.ts']?.capturedAt;
+
+    expect(timeBefore).toBe(timeAfter);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshSnapshot: reconcile cycle without agent refreshes snapshot from filesChanged', () => {
+  const root = makeTmpDir();
+  const snapshotDir = join(root, '.harness', 'snapshot');
+  try {
+    mkdirSync(join(root, 'api'), { recursive: true });
+    writeFileSync(join(root, 'api/shared.ts'), Buffer.from('original\n'));
+
+    const snap = makeSnap(root, snapshotDir, {
+      modifiedFiles: ['api/shared.ts'],
+      configuredAgents: {},
+      cycleStateFiles: {
+        'reconcile.json': JSON.stringify({ filesChanged: ['api/shared.ts'] }),
+      },
+    });
+    snap.createPreRunSnapshot();
+
+    const timeBefore = snap.readIndex()['api/shared.ts']?.capturedAt;
+
+    writeFileSync(join(root, 'api/shared.ts'), Buffer.from('reconcile updated\n'));
+    snap.refreshSnapshot({ id: 'reconcile', type: 'reconcile', agent: null, outputFile: 'reconcile.json' });
+
+    const index = snap.readIndex();
+    expect(index['api/shared.ts']).toBeTruthy();
+    expect(index['api/shared.ts'].capturedAt).not.toBe(timeBefore);
+
+    const blob = readFileSync(join(snapshotDir, index['api/shared.ts'].blobFile));
+    expect(blob).toEqual(Buffer.from('reconcile updated\n'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshSnapshot: reconcile cycle without agent does nothing when filesChanged is empty', () => {
+  const root = makeTmpDir();
+  const snapshotDir = join(root, '.harness', 'snapshot');
+  try {
+    mkdirSync(join(root, 'api'), { recursive: true });
+    writeFileSync(join(root, 'api/shared.ts'), Buffer.from('original\n'));
+
+    const snap = makeSnap(root, snapshotDir, {
+      modifiedFiles: ['api/shared.ts'],
+      configuredAgents: {},
+      cycleStateFiles: {
+        'reconcile.json': JSON.stringify({ filesChanged: [] }),
+      },
+    });
+    snap.createPreRunSnapshot();
+
+    const timeBefore = snap.readIndex()['api/shared.ts']?.capturedAt;
+
+    writeFileSync(join(root, 'api/shared.ts'), Buffer.from('modified after snapshot\n'));
+    snap.refreshSnapshot({ id: 'reconcile', type: 'reconcile', agent: null, outputFile: 'reconcile.json' });
+    const timeAfter = snap.readIndex()['api/shared.ts']?.capturedAt;
+
+    expect(timeBefore).toBe(timeAfter);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('refreshSnapshot: reconcile cycle without agent does nothing when outputFile is absent', () => {
+  const root = makeTmpDir();
+  const snapshotDir = join(root, '.harness', 'snapshot');
+  try {
+    mkdirSync(join(root, 'api'), { recursive: true });
+    writeFileSync(join(root, 'api/shared.ts'), Buffer.from('original\n'));
+
+    const snap = makeSnap(root, snapshotDir, {
+      modifiedFiles: ['api/shared.ts'],
+      configuredAgents: {},
+      cycleStateFiles: {},
+    });
+    snap.createPreRunSnapshot();
+
+    const timeBefore = snap.readIndex()['api/shared.ts']?.capturedAt;
+
+    snap.refreshSnapshot({ id: 'reconcile', type: 'reconcile', agent: null, outputFile: 'reconcile.json' });
+    const timeAfter = snap.readIndex()['api/shared.ts']?.capturedAt;
 
     expect(timeBefore).toBe(timeAfter);
   } finally {

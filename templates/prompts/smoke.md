@@ -18,12 +18,15 @@ If DEV_SERVER_URL is empty OR no browser automation tools are found, write this 
 
 ## Step 1 — Identify pages to check
 
-Read the implement report(s) below. From each `filesChanged` entry, derive the URL:
+Read the snapshot index — it contains every file modified during this run (by implement, test, and reconcile cycles):
+Read: `{{SNAPSHOT_DIR}}/snapshot.json`
+
+The JSON object's keys are the changed file paths. From each path, derive the URL:
 - `web/src/app/(dashboard)/X/page.tsx` → `{{DEV_SERVER_URL}}/X`
 - `web/src/app/(dashboard)/X/[id]/page.tsx` → `{{DEV_SERVER_URL}}/X/1` (use a dummy id)
-- Component files with no direct route → skip (no page to navigate to)
+- Component files, hooks, utilities with no direct route → skip
 
-Only check pages that were directly changed. Skip files that have no corresponding browser route.
+The implement reports below are supplementary context — the snapshot index is the source of truth for which files changed.
 
 {{IMPL_REPORTS}}
 

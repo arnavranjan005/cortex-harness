@@ -24,6 +24,7 @@ If the request has no specific surface, file, behavior, or error mentioned AND i
 | "add", "implement", "I need X" on existing code | Read `.harness/prompts/implement-feature.md` and follow its steps |
 | "fix", "broken", "error", "not working", stack trace | Read `.harness/prompts/fix-bug.md` and follow its steps |
 | "change", "update", "modify", "adjust" existing behavior | Read `.harness/prompts/edit-feature.md` and follow its steps |
+| Mixed verbs — fix + add, fix + change, implement + edit | Multi-intent: decompose into ordered groups (fix → edit → implement), each with its own cycle sequence. Read `.harness/prompts/orchestrate.md` Step 6 for full rules. |
 | "where is X", "find X", "how does X work" (read-only) | Spawn `explorer-subagent` |
 | "plan", "design", "how should we approach" (read-only) | Spawn `planner-subagent` |
 | "scaffold", "generate", new lib/project inside existing app | Invoke `nx-generate` skill first, then `implement-feature.md` |
@@ -47,7 +48,7 @@ If your initial prompt begins with `CYCLE CONSTRAINTS`, you are running as a nam
 - Follow the cycle prompt instructions exactly, write your output JSON to the specified `.harness/cycle-state/` file
 - End your final message with exactly one signal:
   - `CYCLE_COMPLETE` — work is finished, outer loop advances the queue
-  - `NEEDS_HUMAN_INPUT` — blocked on a decision only a human can make
+  - `NEEDS_HUMAN_INPUT` — blocked on a hard decision only a human can make (schema migration, auth/JWT/CORS/CSRF, destructive action). Do NOT emit for routing ambiguity — make a best-guess decision and continue.
   - `CYCLE_PARTIAL:<reason>` — could not finish; outer loop will retry
 
 **Session resumption — run this at the start of every interactive conversation:**
@@ -144,7 +145,12 @@ If no skills match: record "none available / none matched" and continue.
    - Auth, JWT, session, CORS, CSRF, permissions change
    - Ambiguous ownership spanning >2 agents after checking routing table
 
-3. **Consistency check** — confirm queue producers/consumers, API request/response shapes, and validation schemas align across all changed surfaces.
+3. **Consistency check** — confirm queue producers/consumers, API request/response shapes, and validation schemas align across all changed surfaces. Also run the mechanical wiring sweep:
+   - Every backend route file added/touched: verify it is imported AND registered (e.g. `app.use()`).
+   - Every frontend API fetch: verify the path resolves to a registered route.
+   - Every provider/hook/component meant to run globally: verify it is rendered in a layout or root tree.
+   - Every nav entry pointing at a changed page: verify it is not gated by a stale feature flag.
+   Treat any finding here as a real gap — step 2 re-delegation rules apply; "pre-existing" is not an exemption.
 
 4. **Final verification** — spawn `tester-subagent` to run `npm exec nx affected --target=build,test,lint`. Add `typecheck` if shared lib contracts were changed. **Mandatory — not skippable.**
    - If any changed functionality has no test coverage, write the missing tests — not a follow-up.
@@ -167,6 +173,7 @@ If no skills match: record "none available / none matched" and continue.
 - [ ] Consistency check passed (Step 3)
 - [ ] Tester ran `npm exec nx affected --target=build,test,lint` — all pass (Step 4)
 - [ ] Missing tests written — none deferred (Step 4)
+- [ ] Smoke passed (or skipped) — if any frontend changed, check `cycle-state/smoke*.json` for `passed: true` or `skipped: true` before delivering
 
 **Loop rule:** If any item above is unchecked —
 - **Retroactively actionable** (explorer, planner, tester, tests, contract check, re-delegation gaps): do it now, re-check, repeat until checked

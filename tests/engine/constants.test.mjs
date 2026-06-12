@@ -10,6 +10,7 @@ import {
   RESULT_GRACE_MS,
   TURN_CAP,
   TEST_MAX_RETRIES_CLEAN,
+  SMOKE_MAX_RETRIES_CLEAN,
   isWindows,
   SEQUENTIAL_TYPES,
   getTurnCap,
@@ -64,10 +65,39 @@ describe('getTurnCap', () => {
     expect(TURN_CAP.test).toBeGreaterThan(0);
   });
 
+  test('returns TURN_CAP value for "smoke" cycle type', () => {
+    expect(getTurnCap({ type: 'smoke' })).toBe(TURN_CAP.smoke);
+    expect(TURN_CAP.smoke).toBe(20);
+  });
+
+  test('smoke turn cap is less than test turn cap', () => {
+    expect(TURN_CAP.smoke).toBeLessThan(TURN_CAP.test);
+  });
+
   test('returns Infinity for cycle types with no explicit cap', () => {
     expect(getTurnCap({ type: 'implement-backend' })).toBe(Infinity);
     expect(getTurnCap({ type: 'reconcile' })).toBe(Infinity);
     expect(getTurnCap({ type: 'deliver' })).toBe(Infinity);
     expect(getTurnCap({ type: 'orchestrate' })).toBe(Infinity);
+  });
+});
+
+describe('SMOKE_MAX_RETRIES_CLEAN', () => {
+  test('equals 10', () => {
+    expect(SMOKE_MAX_RETRIES_CLEAN).toBe(10);
+  });
+
+  test('is greater than MAX_RETRIES', () => {
+    expect(SMOKE_MAX_RETRIES_CLEAN).toBeGreaterThan(MAX_RETRIES);
+  });
+
+  test('matches TEST_MAX_RETRIES_CLEAN', () => {
+    expect(SMOKE_MAX_RETRIES_CLEAN).toBe(TEST_MAX_RETRIES_CLEAN);
+  });
+});
+
+describe('SEQUENTIAL_TYPES smoke membership', () => {
+  test('smoke is in SEQUENTIAL_TYPES', () => {
+    expect(SEQUENTIAL_TYPES.has('smoke')).toBe(true);
   });
 });

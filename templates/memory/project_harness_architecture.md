@@ -22,14 +22,21 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 | reconcile | `reconcile` | Contract check + gap resolution + consistency |
 | reconcile-cross-group | `reconcile` | Multi-intent only — checks contracts across all groups; may emit `requiresAdditionalGroups` to inject new cycle groups |
 | test | `test` | `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 clean retries |
+| smoke | `smoke` | Browser pass after test — playwright MCP auto-scoped, dev server auto-started via browser MCP detection; emitted only for groups with an implement-frontend cycle |
 | fix-* | `fix` | Injected dynamically on test failure, up to MAX_RETRIES=2 |
 | recovery | `recovery` | Injected after MAX_RETRIES exhausted — reads orchestration.md, re-chains |
 | deliver | `deliver` | Reads all cycle-state/ files, produces unified summary |
 
-Single-intent sequence: `orchestrate → explore → plan? → implement-* → reconcile → test → [fix-* → test-retry]* → [recovery]? → deliver`
+Single-intent sequence: `orchestrate → explore → plan? → implement-* → reconcile → test → [smoke?] → [fix-* → test-retry]* → [recovery]? → deliver`
 
-Multi-intent sequence: `orchestrate → [shared-explore] → [fix-group cycles] → [edit-group cycles] → [implement-group cycles] → reconcile-cross-group → [additional-group cycles?] → deliver`
-Each group runs: `[reproduce?] → explore? → implement-* → reconcile-group → test-group → [fix-* → test-retry]*`
+Multi-intent sequence: `orchestrate → [shared-explore] → [fix-group cycles] → [edit-group cycles] → [implement-group cycles] → reconcile-cross-group → [global-smoke?] → [additional-group cycles?] → deliver`
+Each implement-feature/edit-feature group runs: `implement-* → reconcile-group → test-group → [per-group-smoke?] → [fix-* → test-retry]*`
+Each fix-bug group runs: `reproduce (emitted before shared explore) → implement-* → test-group → reconcile-group → [per-group-smoke?] → [fix-* → test-retry]*`
+
+**Multi-intent smoke ordering (important):**
+- Per-group smoke runs *inside* each group, after that group's test cycle, **BEFORE** reconcile-cross-group.
+- Global smoke (no taskGroup) runs *after* reconcile-cross-group — catches cross-group integration failures and any frontend files touched by reconcile-cross-group. Only emitted if any group has an implement-frontend cycle.
+- Per-group smokes are omitted if the global smoke already covers everything — but the orchestrate prompt emits both when any group has frontend cycles.
 
 ## State transfer
 
@@ -89,8 +96,9 @@ Every cycle must end its final message with exactly one:
 
 - **Budget cap**: `MAX_BUDGET_USD = 20` — stops loop at $0.10 remaining
 - **Dead man timer**: `DEAD_MAN_MS = 20 min` — force-kills subprocess on silence
-- **Turn cap**: test cycle capped at 25 turns/slice; all others at 500 (safety net)
+- **Turn cap**: test cycle 25 turns/slice (up to 10 clean retries); smoke cycle 20 turns/slice (up to 10 clean retries); all others 500 safety ceiling
 - **Scope revert**: out-of-scope writes cascade through `git restore → git clean -f → git show HEAD → unlinkSync`
+- **Smoke gate in deliver**: if any `smoke*.json` has `passed: false` and `skipped != true`, deliver does NOT write a normal summary — it emits only a Smoke failures section and ends with `NEEDS_HUMAN_INPUT`
 
 ## Multi-intent decomposition
 

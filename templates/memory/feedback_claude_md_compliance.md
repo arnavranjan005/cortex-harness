@@ -62,13 +62,19 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
 - Prefer targeted validation for changed surfaces before broad workspace runs
 
 ### 7. Reconciliation (after all agents report back)
-- Step 1: Cross-surface contract check — shared types, validation schemas, interfaces aligned across all surfaces. On failure: re-delegate to owning agent, re-run check, repeat until all agree.
+- Step 1: Cross-surface contract check — shared types, Zod schemas, interfaces aligned across all surfaces. On failure: re-delegate to owning agent, re-run check, repeat until all agree.
 - Step 2: Resolve all out-of-scope gaps — classify each using CLAUDE.md gap table, then fill mandatory re-delegation log:
   - Log columns: Gap | Owning agent | Spawned? | Result
   - Spawned = no anywhere → NOT done, spawn that agent now
   - "Pre-existing", "if desired", "out of scope for this task" are NOT valid reasons to leave Spawned = no
   - Gap reaches Residual risks ONLY if: Spawned = yes AND result = human-approval OR failed after 2 attempts
-- Step 3: Consistency check — queue producers/consumers, API request/response shapes, validation schemas. On failure: re-delegate misaligned side; if spans >2 agents or needs arch judgment → stop and ask user.
+  - **"Already implemented" false positive guard**: if an implement report claims a sub-task is "already done by a prior cycle" and shows `filesChanged: []` (or near-empty), do NOT accept it — open the referenced files and confirm the change actually satisfies THIS group's sub-task. If not, treat it as a real gap and re-delegate.
+- Step 3: Consistency check — queue producers/consumers, API request/response shapes, validation schemas. Also run the mechanical wiring sweep:
+  - Every backend route added/touched: confirm imported AND registered (e.g. `app.use()`)
+  - Every frontend API call: confirm the path resolves to a registered route
+  - Every global provider/hook/component: confirm rendered in layout or root tree
+  - Every nav entry for a changed page: confirm not gated by a stale feature flag
+  On failure: re-delegate misaligned side; "pre-existing" is not an exemption here.
 - Step 4: Final verification — spawn `tester-subagent` to run `npm exec nx affected --target=build,test,lint` (add `typecheck` if shared contracts changed). **Mandatory for every task that changes UI-visible behavior, backend logic, distributed/queue flows, or shared contracts — not skippable.**
   - If any changed functionality has no tests (unit/integration/e2e), write them now — not a follow-up
   - On failure (attempt 1–2): re-delegate broken surface with exact error, re-run
@@ -88,10 +94,11 @@ Every rule in CLAUDE.md is mandatory. Do not skip, shortcut, or partially follow
     - [ ] Consistency check passed (Step 3)
     - [ ] Tester ran `npm exec nx affected --target=build,test,lint` — all pass (Step 4)
     - [ ] Missing tests written — none deferred (Step 4)
+    - [ ] Smoke passed or skipped — if frontend changed, verify `smoke*.json` has `passed: true` or `skipped: true` before delivering
   - **Loop rule:** retroactively actionable items (explorer/planner/tester/tests/contract/consistency) → do it now and re-check; not fixable (session skip, wrong prompt used) → flag in Residual risks, do not block delivery
 - Step 5: Deliver unified summary ONLY after gate is fully resolved — sections: What changed / Checks passed / Gaps resolved / Residual risks
 
-### 7. Security & safety
+### 8. Security & safety
 - auth, session, JWT, cookie, CORS, CSRF, webhook verification, permissions → request approval before modifying
 - Never access actual `.env` contents or print environment variables
 - Never expose credentials, tokens, API keys, or personal data in logs, diffs, or summaries
