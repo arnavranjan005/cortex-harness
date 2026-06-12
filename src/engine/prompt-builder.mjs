@@ -20,6 +20,7 @@ export function createPromptBuilder({
   AGENTS_DIR,
   CYCLE_DIR,
   CYCLE_STATE_RELDIR,
+  SNAPSHOT_RELDIR,
   CONFIGURED_AGENTS,
   userTask,
   readCycleState,
@@ -195,6 +196,12 @@ Current cycle: ${cycle.id}`;
       ? `\n## Prior test attempt\n\`\`\`json\n${testReportRaw}\n\`\`\``
       : "";
 
+    const smokeSuffix = cycle.taskGroup ? `-${cycle.taskGroup}` : "";
+    const smokeReportRaw = readCycleState(`smoke${smokeSuffix}.json`);
+    const smokeFailureDetails = smokeReportRaw
+      ? `\n## Smoke failure details\n\`\`\`json\n${smokeReportRaw}\n\`\`\``
+      : "";
+
     let templateContent;
 
     if (cycle.id.startsWith("scope-cleanup-")) {
@@ -247,8 +254,10 @@ Current cycle: ${cycle.id}`;
       .replace(/\{\{CYCLE_OUTPUTS\}\}/g, assembleCycleOutputs())
       .replace(/\{\{TEST_FAILURE_DETAILS\}\}/g, testFailureDetails)
       .replace(/\{\{PRIOR_TEST_ATTEMPT\}\}/g, priorTestAttempt)
+      .replace(/\{\{SMOKE_FAILURE_DETAILS\}\}/g, smokeFailureDetails)
       .replace(/\{\{MAX_RETRIES\}\}/g, String(MAX_RETRIES))
-      .replace(/\{\{DEV_SERVER_URL\}\}/g, cycle.devServerUrl ?? "");
+      .replace(/\{\{DEV_SERVER_URL\}\}/g, cycle.devServerUrl ?? "")
+      .replace(/\{\{SNAPSHOT_DIR\}\}/g, SNAPSHOT_RELDIR ?? "");
 
     return templateContent;
   }

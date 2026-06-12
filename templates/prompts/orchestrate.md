@@ -57,15 +57,24 @@ Violating any of the above means you have failed this cycle. The only tools you 
         with no taskGroup and outputFile: "explore.json" — all groups fall back to it automatically.
         Per-group explore: only if the task description makes it clear the intents are on completely
         separate surfaces with no shared code. When in doubt, use shared explore.
-     g. Build a separate cycle group per sub-task — each group gets its own implement-*, reconcile, test
+     g. Build a separate cycle group per sub-task — each group MUST have its own cycles in this exact order:
+        - implement-feature / edit-feature group: implement-* → reconcile → test → [smoke if contains implement-frontend]
+        - fix-bug group: reproduce → implement-* → test → reconcile → [smoke if contains implement-frontend]
+          Note: reproduce cycles are emitted before the shared explore in the global queue (per hard ordering rule)
+        Do NOT skip the per-group reconcile. reconcile-cross-group (Step 6j) does NOT replace per-group reconcile — it is a separate cross-group check that runs later.
      h. Group suffix on all cycle ids and outputFiles: e.g. "implement-backend-fix-z", outputFile: "implement-backend-fix-z.json"
         Shared cycles (explore when shared, deliver, reconcile-cross-group) get NO suffix
      i. All cycles in a group carry: "taskGroup": "<slug>", "subTask": "<sub-task text>"
         Shared cycles omit taskGroup (or set null)
-     j. After ALL groups' test cycles, add one "reconcile-cross-group" cycle:
-        { "id": "reconcile-cross-group", "type": "reconcile", "taskGroup": null,
-          "outputFile": "reconcile-cross-group.json",
-          "notes": "Cross-group contract check — verify shared type/schema changes from all groups are consumed correctly across groups" }
+     j. After ALL groups' own test+reconcile cycles — and BEFORE per-group smoke cycles — add:
+        1. One "reconcile-cross-group" cycle (no taskGroup):
+           { "id": "reconcile-cross-group", "type": "reconcile", "taskGroup": null,
+             "outputFile": "reconcile-cross-group.json",
+             "notes": "Cross-group contract check — verify shared type/schema changes from all groups are consumed correctly across groups" }
+        2. One global "smoke" cycle (no taskGroup) — only if ANY group has an implement-frontend cycle:
+           { "id": "smoke", "type": "smoke", "taskGroup": null, "outputFile": "smoke.json",
+             "notes": "Global smoke — checks all pages changed by any group including any files modified by reconcile-cross-group" }
+           This global smoke catches cross-group integration failures and any frontend files touched by reconcile-cross-group, which per-group smokes cannot see.
      k. One shared deliver cycle at the end — always last, no taskGroup
      l. Set promptType: "multi-intent" and write intents[] in task-queue.json
      m. skills.json is written once (Step 2) and shared — no group suffix
@@ -74,12 +83,12 @@ Violating any of the above means you have failed this cycle. The only tools you 
 
 7. Read the matching prompt file with the Read tool:
    - Single intent: .harness/prompts/<type>.md
-   - Multi-intent: already done in Step 6e — proceed to Step 8
+   - Multi-intent: already done in Step 6e — proceed to Step 9 (Step 8 is for single-intent only)
 
 8. Map that prompt file's steps to cycles. The cycle sequence MUST mirror the prompt's step order.
-   - implement-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
-   - fix-bug: reproduce → explore (if needed) → implement-* → test → reconcile → deliver
-   - edit-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → deliver
+   - implement-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → [smoke if contains implement-frontend] → deliver
+   - fix-bug: reproduce → explore (if needed) → implement-* → test → reconcile → [smoke if contains implement-frontend] → deliver
+   - edit-feature: explore → plan (if multi-surface) → implement-* → reconcile → test → [smoke if contains implement-frontend] → deliver
 
 9. Write the complete cycle plan to: .harness/task-queue.json
 
@@ -113,8 +122,9 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - explore ALWAYS runs before any implement cycle (mandatory, even when location seems obvious)
 - plan runs before implement if task touches >1 surface OR shared contracts are involved
 - fix-bug reproduce cycle runs BEFORE explore (typecheck + tests first, per fix-bug Step 1)
-- all implement cycles run before reconcile
-- reconcile runs before test
+- within each group: implement-* runs before reconcile AND test
+- within each group (implement-feature, edit-feature): reconcile runs before test
+- within each group (fix-bug only): test runs before reconcile
 - test runs before smoke (when smoke is present)
 - smoke runs before deliver (when smoke is present)
 - deliver is always last
@@ -122,28 +132,8 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - smoke cycles: omit `agent` — the engine uses cycle type "smoke" to scope playwright MCP; the engine auto-starts the dev server because playwright is a browser MCP
 - implement cycles with non-overlapping write scopes may set parallel: true
 - multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
-- multi-intent: reconcile-cross-group runs after ALL groups' test cycles complete, before smoke cycles
-- multi-intent: within a group, the same ordering rules apply as for single-intent
-
-## Smoke cycle — when and how to emit
-
-Emit a smoke cycle after the test cycle **only for groups that include an implement-frontend cycle**.
-Do NOT emit smoke for backend-only, infra-only, or distributed-only groups.
-
-```json
-{
-  "id": "smoke-<group>",
-  "type": "smoke",
-  "status": "pending",
-  "outputFile": "smoke-<group>.json",
-  "parallel": false,
-  "taskGroup": "<group slug>",
-  "subTask": "<sub-task text>",
-  "notes": "Browser smoke pass: navigate affected pages, assert no 404/500, check same-origin API calls"
-}
-```
-
-For single-intent tasks with a frontend implement cycle, the smoke id is simply `"smoke"` with `outputFile: "smoke.json"` (no group suffix needed).
-If `devServer` is not configured in `harness.config.json`, the smoke cycle will auto-skip — it is still safe to emit.
+- multi-intent: per-group smoke (Step 6g) runs within each group after that group's test cycle, BEFORE reconcile-cross-group
+- multi-intent: reconcile-cross-group runs after ALL groups' own test+reconcile cycles complete, and BEFORE the global smoke
+- multi-intent: global smoke (if any group has implement-frontend) runs after reconcile-cross-group, covers all groups' changes
 
 Task: {{USER_TASK}}

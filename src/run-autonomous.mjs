@@ -47,6 +47,7 @@ const QUEUE_FILE = join(HARNESS_DIR, "task-queue.json");
 const SNAPSHOT_DIR = join(HARNESS_DIR, "pre-run-snapshot");
 
 const CYCLE_STATE_RELDIR = relative(ROOT, CYCLE_DIR).replace(/\\/g, "/");
+const SNAPSHOT_RELDIR = relative(ROOT, SNAPSHOT_DIR).replace(/\\/g, "/");
 
 // ── Task input ────────────────────────────────────────────────────────────────
 
@@ -208,6 +209,7 @@ const { buildCyclePrompt } = createPromptBuilder({
   AGENTS_DIR,
   CYCLE_DIR,
   CYCLE_STATE_RELDIR,
+  SNAPSHOT_RELDIR,
   CONFIGURED_AGENTS,
   userTask,
   readCycleState,
@@ -516,24 +518,84 @@ async function main() {
             }
           }
 
+          // Inject fix cycles or smoke-retry on smoke failure
+          if (cycle.type === "smoke" && testReport !== null) {
+            const sg = cycle.taskGroup;
+            const sgSuffix = sg ? `-${sg}` : "";
+            // Count total smoke attempts for this group (not per-cycle-ID) to prevent infinite loop
+            const totalSmokeAttempts = queue.cycles.filter((c) =>
+              c.type === "smoke" &&
+              (sg ? c.taskGroup === sg : !c.taskGroup) &&
+              (c.status === "done" || c.id === cycle.id)
+            ).length;
+            if (!testReport.passed && !testReport.skipped && !testReport.partial && totalSmokeAttempts <= MAX_RETRIES) {
+              const failures = testReport.failures ?? [];
+              const hasFrontendFailure = failures.some((f) => f.page);
+              const hasApiFailure = failures.some((f) => f.url);
+              const surfaces = [];
+              if (hasFrontendFailure) surfaces.push("frontend");
+              if (hasApiFailure) surfaces.push("backend");
+              if (!surfaces.length) surfaces.push("frontend");
+
+              const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
+              const fixCycles = surfaces.map((surface) => ({
+                id: `fix-${surface}-smoke-attempt-${totalSmokeAttempts}${sgSuffix}`,
+                type: "fix",
+                target: surface,
+                ...(sg ? { taskGroup: sg } : {}),
+                ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
+                status: "pending",
+                outputFile: `fix-${surface}-smoke-attempt-${totalSmokeAttempts}${sgSuffix}.json`,
+                notes: `Fix injected after smoke failure attempt ${totalSmokeAttempts}: ${failures.map((f) => f.issue).slice(0, 3).join("; ")}`,
+              }));
+              const retrySmoke = {
+                id: `smoke-retry-${totalSmokeAttempts}${sgSuffix}`,
+                type: "smoke",
+                ...(sg ? { taskGroup: sg } : {}),
+                ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
+                status: "pending",
+                outputFile: `smoke${sgSuffix}.json`,
+                notes: `Smoke retry after fix attempt ${totalSmokeAttempts}`,
+              };
+              const insertAt = deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
+              queue.cycles.splice(insertAt, 0, ...fixCycles, retrySmoke);
+              writeQueue(queue);
+              console.log(
+                `  ${chalk.yellow("[SMOKE FIX]")} Smoke failed (attempt ${totalSmokeAttempts}/${MAX_RETRIES}) — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
+              );
+              printPendingQueue(queue);
+            } else if (!testReport.passed && !testReport.skipped && !testReport.partial) {
+              console.log(
+                `  ${chalk.red("[SMOKE FAILED]")} Smoke failed after ${totalSmokeAttempts} attempt(s) — deliver will surface failures as NEEDS_HUMAN_INPUT`,
+              );
+            }
+          }
+
           // Inject fix cycles or recovery cycle on test failure
           if (cycle.type === "test" && testReport !== null) {
             const fg = cycle.taskGroup;
             const fgSuffix = fg ? `-${fg}` : "";
-            if (!testReport.passed && attempt <= MAX_RETRIES) {
-              const surfaces = testReport.failedSurfaces?.length ? testReport.failedSurfaces : ["unknown"];
+            // Count total test attempts for this group (not per-cycle-ID) to prevent infinite fix loop
+            const totalTestAttempts = queue.cycles.filter((c) =>
+              c.type === "test" &&
+              (fg ? c.taskGroup === fg : !c.taskGroup) &&
+              (c.status === "done" || c.id === cycle.id)
+            ).length;
+            if (!testReport.passed && totalTestAttempts <= MAX_RETRIES) {
+              const surfaces = (testReport.failedSurfaces?.length ? testReport.failedSurfaces : ["unknown"])
+                .map((s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown");
               const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
               const fixCycles = surfaces.map((surface) => ({
-                id: `fix-${surface}-attempt-${attempt}${fgSuffix}`,
+                id: `fix-${surface}-attempt-${totalTestAttempts}${fgSuffix}`,
                 type: "fix",
                 target: surface,
                 ...(fg ? { taskGroup: fg } : {}),
                 ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
                 status: "pending",
-                outputFile: `fix-${surface}-attempt-${attempt}${fgSuffix}.json`,
+                outputFile: `fix-${surface}-attempt-${totalTestAttempts}${fgSuffix}.json`,
               }));
               const retryTest = {
-                id: `test-retry-${attempt}${fgSuffix}`,
+                id: `test-retry-${totalTestAttempts}${fgSuffix}`,
                 type: "test",
                 ...(fg ? { taskGroup: fg } : {}),
                 ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
@@ -544,7 +606,7 @@ async function main() {
               queue.cycles.splice(insertAt, 0, ...fixCycles, retryTest);
               writeQueue(queue);
               console.log(
-                `  ${chalk.yellow("[FIX]")} Tests failed — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
+                `  ${chalk.yellow("[FIX]")} Tests failed (attempt ${totalTestAttempts}/${MAX_RETRIES}) — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
               );
               printPendingQueue(queue);
             } else if (!testReport.passed) {

@@ -116,7 +116,25 @@ export function createSnapshotManager({
   }
 
   function refreshSnapshot(cycle) {
-    if (!cycle.agent) return;
+    // Reconcile cycles have no agent but can edit contract/shared files.
+    // Same pattern as agent cycles — read outputFile filesChanged, no scope filter needed.
+    if (!cycle.agent) {
+      if (cycle.type !== "reconcile") return;
+      const rawJson = readCycleState(cycle.outputFile);
+      if (!rawJson) return;
+      let report;
+      try { report = JSON.parse(rawJson); } catch { return; }
+      const files = (report.filesChanged ?? [])
+        .map((e) => (typeof e === "string" ? e : (e.file ?? e.path ?? "")))
+        .filter(Boolean);
+      if (!files.length) return;
+      captureFiles(files);
+      console.log(
+        `  ${chalk.dim("[SNAPSHOT]")} refreshed ${files.length} file(s) after reconcile ${chalk.cyan(cycle.id)}`,
+      );
+      return;
+    }
+
     const agentConfig = configuredAgents[cycle.agent];
     const scope = agentConfig?.scope;
     if (!scope || scope.length === 0) return;
