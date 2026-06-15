@@ -156,6 +156,21 @@ test('validates a minimal valid task queue', () => {
   expect(result.valid).toBe(true);
 });
 
+test('accepts task queue with a smoke cycle', () => {
+  const result = validateTaskQueue({
+    task: 'add payments page',
+    promptType: 'implement-feature',
+    cycles: [
+      { id: 'explore', type: 'explore', status: 'pending', outputFile: 'explore.json' },
+      { id: 'implement-frontend', type: 'implement-frontend', status: 'pending', agent: 'frontend-subagent', outputFile: 'implement-frontend.json' },
+      { id: 'test', type: 'test', status: 'pending', agent: 'tester-subagent', outputFile: 'test.json' },
+      { id: 'smoke', type: 'smoke', status: 'pending', outputFile: 'smoke.json' },
+      { id: 'deliver', type: 'deliver', status: 'pending' },
+    ],
+  });
+  expect(result.valid).toBe(true);
+});
+
 test('rejects task queue with unknown promptType', () => {
   const result = validateTaskQueue({
     task: 'add thing',

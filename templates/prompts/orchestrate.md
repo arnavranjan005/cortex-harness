@@ -58,15 +58,15 @@ Violating any of the above means you have failed this cycle. The only tools you 
         Per-group explore: only if the task description makes it clear the intents are on completely
         separate surfaces with no shared code. When in doubt, use shared explore.
      g. Build a separate cycle group per sub-task — each group MUST have its own cycles in this exact order:
-        - implement-feature / edit-feature group: implement-* → reconcile → test → [smoke if contains implement-frontend]
-        - fix-bug group: reproduce → implement-* → test → reconcile → [smoke if contains implement-frontend]
+        - implement-feature / edit-feature group: implement-* → reconcile → test
+        - fix-bug group: reproduce → implement-* → test → reconcile
           Note: reproduce cycles are emitted before the shared explore in the global queue (per hard ordering rule)
         Do NOT skip the per-group reconcile. reconcile-cross-group (Step 6j) does NOT replace per-group reconcile — it is a separate cross-group check that runs later.
      h. Group suffix on all cycle ids and outputFiles: e.g. "implement-backend-fix-z", outputFile: "implement-backend-fix-z.json"
         Shared cycles (explore when shared, deliver, reconcile-cross-group) get NO suffix
      i. All cycles in a group carry: "taskGroup": "<slug>", "subTask": "<sub-task text>"
         Shared cycles omit taskGroup (or set null)
-     j. After ALL groups' own test+reconcile cycles — and BEFORE per-group smoke cycles — add:
+     j. After ALL groups' own test+reconcile cycles, add:
         1. One "reconcile-cross-group" cycle (no taskGroup):
            { "id": "reconcile-cross-group", "type": "reconcile", "taskGroup": null,
              "outputFile": "reconcile-cross-group.json",
@@ -132,7 +132,6 @@ intents[] is only written when promptType is "multi-intent". For single-intent t
 - smoke cycles: omit `agent` — the engine uses cycle type "smoke" to scope playwright MCP; the engine auto-starts the dev server because playwright is a browser MCP
 - implement cycles with non-overlapping write scopes may set parallel: true
 - multi-intent: fix groups → edit groups → implement/create groups (strict ordering between groups)
-- multi-intent: per-group smoke (Step 6g) runs within each group after that group's test cycle, BEFORE reconcile-cross-group
 - multi-intent: reconcile-cross-group runs after ALL groups' own test+reconcile cycles complete, and BEFORE the global smoke
 - multi-intent: global smoke (if any group has implement-frontend) runs after reconcile-cross-group, covers all groups' changes
 

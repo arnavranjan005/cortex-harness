@@ -145,6 +145,7 @@ export const CycleEntry = z.object({
     'reconcile',
     'test',
     'fix',
+    'smoke',
     'recovery',
     'deliver',
   ]),
