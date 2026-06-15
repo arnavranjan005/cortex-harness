@@ -22,7 +22,7 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 | reconcile | `reconcile` | Contract check + gap resolution + consistency |
 | reconcile-cross-group | `reconcile` | Multi-intent only — checks contracts across all groups; may emit `requiresAdditionalGroups` to inject new cycle groups |
 | test | `test` | `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 clean retries |
-| smoke | `smoke` | Browser pass after test — Node.js orchestrator (`createSmokeOrchestrator`) runs per-URL mini-Claude sessions with Playwright MCP; emitted only for groups with an implement-frontend cycle. A pre-smoke step runs `url-detector.md` LLM prompt to extract changed page URLs, falls back to `route-scanner.mjs` filesystem scan; merges with `smokeUrls[]` from config. Auth profiles injected at runtime from `authProfiles[]` in `harness.config.json`. |
+| smoke | `smoke` | One global browser pass after reconcile-cross-group — Node.js orchestrator (`createSmokeOrchestrator`) runs per-URL mini-Claude sessions with Playwright MCP; emitted once per run only if any group has an implement-frontend cycle. A pre-smoke step runs `url-detector.md` LLM prompt to extract changed page URLs, falls back to `route-scanner.mjs` filesystem scan; merges with `smokeUrls[]` from config. Auth profiles injected at runtime from `authProfiles[]` in `harness.config.json`. |
 | fix-* | `fix` | Injected dynamically on test failure, up to MAX_RETRIES=2 |
 | recovery | `recovery` | Injected after MAX_RETRIES exhausted — reads orchestration.md, re-chains |
 | deliver | `deliver` | Reads all cycle-state/ files, produces unified summary |
@@ -30,13 +30,11 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 Single-intent sequence: `orchestrate → explore → plan? → implement-* → reconcile → test → [smoke?] → [fix-* → test-retry]* → [recovery]? → deliver`
 
 Multi-intent sequence: `orchestrate → [shared-explore] → [fix-group cycles] → [edit-group cycles] → [implement-group cycles] → reconcile-cross-group → [global-smoke?] → [additional-group cycles?] → deliver`
-Each implement-feature/edit-feature group runs: `implement-* → reconcile-group → test-group → [per-group-smoke?] → [fix-* → test-retry]*`
-Each fix-bug group runs: `reproduce (emitted before shared explore) → implement-* → test-group → reconcile-group → [per-group-smoke?] → [fix-* → test-retry]*`
+Each implement-feature/edit-feature group runs: `implement-* → reconcile-group → test-group → [fix-* → test-retry]*`
+Each fix-bug group runs: `reproduce (emitted before shared explore) → implement-* → test-group → reconcile-group → [fix-* → test-retry]*`
 
-**Multi-intent smoke ordering (important):**
-- Per-group smoke runs *inside* each group, after that group's test cycle, **BEFORE** reconcile-cross-group.
-- Global smoke (no taskGroup) runs *after* reconcile-cross-group — catches cross-group integration failures and any frontend files touched by reconcile-cross-group. Only emitted if any group has an implement-frontend cycle.
-- Per-group smokes are omitted if the global smoke already covers everything — but the orchestrate prompt emits both when any group has frontend cycles.
+**Multi-intent smoke ordering:**
+- One global smoke (no taskGroup) runs *after* reconcile-cross-group — catches cross-group integration failures and any frontend files touched by reconcile-cross-group. Only emitted if any group has an implement-frontend cycle.
 
 ## State transfer
 

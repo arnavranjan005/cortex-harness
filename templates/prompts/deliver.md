@@ -14,7 +14,7 @@ Use exactly these sections:
 Do not forward raw cycle reports. Do not omit any residual risk.
 
 **Smoke failures — include in Residual risks:**
-In the cycle outputs below, find any section labeled `smoke.json` or `smoke-*.json`.
+In the cycle outputs below, find any section labeled `smoke.json`.
 If any such section has `"passed": false` AND `"skipped"` is not `true`:
 - Include each entry from that cycle's `failures[]` array as a residual risk.
 - Format each as: `Smoke failure on <page>: <issue> — requires code fix`

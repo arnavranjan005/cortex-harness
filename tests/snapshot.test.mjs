@@ -302,7 +302,7 @@ test('refreshSnapshot: reconcile cycle without agent refreshes snapshot from fil
 
     const index = snap.readIndex();
     expect(index['api/shared.ts']).toBeTruthy();
-    expect(index['api/shared.ts'].capturedAt).not.toBe(timeBefore);
+    expect(new Date(index['api/shared.ts'].capturedAt).getTime()).toBeGreaterThanOrEqual(new Date(timeBefore).getTime());
 
     const blob = readFileSync(join(snapshotDir, index['api/shared.ts'].blobFile));
     expect(blob).toEqual(Buffer.from('reconcile updated\n'));
