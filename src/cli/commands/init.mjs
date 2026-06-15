@@ -1,5 +1,6 @@
 import fs from "fs-extra";
 import path from "path";
+import { spawnSync } from "child_process";
 import chalk from "chalk";
 import { mergeMcpConfig, autoScopeMcpServers } from "../helpers/mcp-config.mjs";
 import { patchGitignore } from "../helpers/gitignore.mjs";
@@ -10,7 +11,7 @@ import {
   applySurfaces,
 } from "../helpers/surfaces.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
-import { intro, outro, log, note, confirm } from "../helpers/ui.mjs";
+import { intro, outro, log, note, confirm, text } from "../helpers/ui.mjs";
 
 // ctx: { pkgRoot, pkgVersion }
 export function registerInitCommand(program, ctx) {
@@ -199,6 +200,7 @@ export function registerInitCommand(program, ctx) {
       // 10. Dev server auto-detection
       log.step("Dev server configuration");
       const detectedDs = detectDevServerConfig(process.cwd());
+      let devServerConfigured = false;
 
       if (detectedDs) {
         const lines = detectedDs.services.map((svc, i) => {
@@ -227,6 +229,7 @@ export function registerInitCommand(program, ctx) {
           };
           await fs.writeJson(configPath, cfg, { spaces: 2 });
           log.success("devServer written to harness.config.json");
+          devServerConfigured = true;
         } else if (!accept) {
           log.message(
             chalk.dim("Skipped — configure devServer manually in harness.config.json if needed"),
@@ -238,15 +241,118 @@ export function registerInitCommand(program, ctx) {
         );
       }
 
-      // Next steps
-      note(
-        [
-          `${chalk.dim("1.")} Review ${chalk.cyan("harness.config.json")} — scope paths are set to your surfaces`,
-          `${chalk.dim("2.")} Review ${chalk.cyan(".harness/agents/*.agent.md")} — Scope sections have been auto-patched`,
-          `${chalk.dim("3.")} Run: ${chalk.cyan('cortex-harness run "your task description"')}`,
-        ].join("\n"),
-        "Next steps",
-      );
+      // 11. Auth state for smoke tests
+      // Only relevant when the app already exists (dev server detected).
+      // On a fresh/empty project there is nothing to authenticate against yet.
+      let authAlreadyRun = false;
+      if (!opts.yes && devServerConfigured) {
+        log.step("Smoke test authentication");
+        note(
+          [
+            "After each run, the harness navigates your app's pages with Playwright",
+            "to confirm nothing is broken (no 404/500 errors).",
+            "",
+            "If your app redirects unauthenticated users to a login page,",
+            "smoke checks will always see the login redirect — never the real page.",
+            "They'll report no errors even when a page is actually broken.",
+            "",
+            `${chalk.cyan("cortex-harness auth")} saves your browser session once so that`,
+            "every smoke cycle starts already logged in.",
+          ].join("\n"),
+          "Why this matters",
+        );
+
+        const needsAuth = await confirm({
+          message: "Does your app require login to access pages?",
+          initialValue: false,
+        });
+
+        if (needsAuth) {
+          const cliPath = path.join(ctx.pkgRoot, "bin", "cli.mjs");
+          spawnSync(process.execPath, [cliPath, "auth"], {
+            stdio: "inherit",
+            cwd: process.cwd(),
+          });
+          authAlreadyRun = true;
+        } else {
+          log.message(
+            chalk.dim("Skipped — run `cortex-harness auth` any time you add authentication"),
+          );
+        }
+
+        // Ask about additional roles/profiles
+        if (needsAuth && authAlreadyRun) {
+          const multiRole = await confirm({
+            message: "Does your app have multiple roles or tenants that need separate sessions?",
+            initialValue: false,
+          });
+
+          if (multiRole) {
+            log.message(chalk.dim("Enter each role/tenant name. Leave blank when done."));
+            let addingProfiles = true;
+            while (addingProfiles) {
+              const profileName = await text({
+                message: "Role/tenant name (e.g. admin, user, tenant-a)",
+                placeholder: "Leave blank to finish",
+              });
+              const name = (profileName ?? "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+              if (!name) { addingProfiles = false; break; }
+
+              log.step(`Saving auth state for profile: ${name}`);
+              const cliPath = path.join(ctx.pkgRoot, "bin", "cli.mjs");
+              spawnSync(process.execPath, [cliPath, "auth", "--profile", name], {
+                stdio: "inherit",
+                cwd: process.cwd(),
+              });
+
+              // Add to harness.config.json authProfiles
+              if (await fs.pathExists(configPath)) {
+                const cfg = await fs.readJson(configPath);
+                if (!Array.isArray(cfg.authProfiles)) cfg.authProfiles = [];
+                if (!cfg.authProfiles.find(p => p.name === name)) {
+                  cfg.authProfiles.push({
+                    name,
+                    storageFile: `.harness/smoke-auth-${name}.json`,
+                    pages: [],
+                  });
+                  await fs.writeJson(configPath, cfg, { spaces: 2 });
+                  log.message(chalk.dim(`Added profile "${name}" to harness.config.json — set pages[] to restrict which URLs use this session.`));
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Next steps — adapt based on what was actually detected
+      const isFreshProject = allEmpty && !devServerConfigured;
+      const nextSteps = [
+        `${chalk.dim("1.")} Review ${chalk.cyan("harness.config.json")} — scope paths are set to your surfaces`,
+        `${chalk.dim("2.")} Review ${chalk.cyan(".harness/agents/*.agent.md")} — Scope sections have been auto-patched`,
+      ];
+
+      if (isFreshProject) {
+        nextSteps.push(
+          `${chalk.dim("3.")} Build your app, then re-run ${chalk.cyan("cortex-harness init")} to configure`,
+          `     surfaces, dev server, and smoke auth once your stack is in place.`,
+        );
+        nextSteps.push(
+          `${chalk.dim("4.")} Run: ${chalk.cyan('cortex-harness run "your task description"')}`,
+        );
+      } else {
+        let n = 3;
+        if (!authAlreadyRun && devServerConfigured) {
+          nextSteps.push(
+            `${chalk.dim(`${n++}.`)} ${chalk.dim("(Optional)")} If your app requires login, save auth state for smoke tests:`,
+            `     ${chalk.cyan("cortex-harness auth")}`,
+          );
+        }
+        nextSteps.push(
+          `${chalk.dim(`${n}.`)} Run: ${chalk.cyan('cortex-harness run "your task description"')}`,
+        );
+      }
+
+      note(nextSteps.join("\n"), "Next steps");
 
       outro(chalk.green.bold("✓ Harness initialized successfully"));
     });

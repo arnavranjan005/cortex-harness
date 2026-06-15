@@ -1,4 +1,7 @@
 {
+  "authProfiles": [],
+  "smokeUrls": [],
+  "smokeCheckBudgetPerUrl": 0.80,
   "harnessDir": ".harness",
   "promptsDir": ".harness/prompts",
   "agentsDir": ".harness/agents",
@@ -6,6 +9,7 @@
     "*": [],
     "frontend-subagent": ["playwright", "shadcn"],
     "tester-subagent": ["playwright"],
+    "smoke": ["playwright"],
     "backend-subagent": [],
     "distributed-subagent": [],
     "infra-subagent": [],

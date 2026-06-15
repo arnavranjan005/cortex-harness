@@ -12,6 +12,7 @@ export const GITIGNORE_RUNTIME_ENTRIES = [
   ".harness/sessions/",
   ".harness/pre-run-snapshot/",
   ".harness/notification-channels.local.json",
+  ".harness/smoke-auth.json",
 ];
 
 export async function patchGitignore(cwd) {

@@ -128,3 +128,14 @@ test('gitignore reports created on first run and already-present on second', () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('gitignore includes smoke-auth.json for auth state protection', () => {
+  const dir = makeTmpDir();
+  try {
+    spawnSync('node', [CLI, 'gitignore'], { cwd: dir, encoding: 'utf8' });
+    const content = readFileSync(join(dir, '.gitignore'), 'utf8');
+    expect(content).toContain('.harness/smoke-auth.json');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
