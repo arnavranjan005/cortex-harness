@@ -13,8 +13,12 @@ import { registerChainCommand } from "../src/cli/commands/chain.mjs";
 import { registerStatusCommand } from "../src/cli/commands/status.mjs";
 import { registerResumeCommand } from "../src/cli/commands/resume.mjs";
 import { registerLogsCommand } from "../src/cli/commands/logs.mjs";
-import { registerNotifySetupCommand, registerNotifyCommand } from "../src/cli/commands/notify.mjs";
+import {
+  registerNotifySetupCommand,
+  registerNotifyCommand,
+} from "../src/cli/commands/notify.mjs";
 import { registerMcpCommand } from "../src/cli/commands/mcp.mjs";
+import { registerAuthCommand } from "../src/cli/commands/auth.mjs";
 import { buildChainTask as _buildChainTask } from "../src/cli/helpers/chain-task.mjs";
 
 const _require = createRequire(import.meta.url);
@@ -46,5 +50,6 @@ registerLogsCommand(program);
 registerNotifySetupCommand(program);
 registerNotifyCommand(program, { pkgRoot });
 registerMcpCommand(program);
+registerAuthCommand(program);
 
 program.parse();

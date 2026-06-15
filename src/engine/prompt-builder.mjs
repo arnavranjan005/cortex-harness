@@ -15,6 +15,155 @@ import { MAX_RETRIES } from "./constants.mjs";
  * @param {Function} ctx.readCycleState    - (filename) => string | null
  * @param {Function} ctx.readQueue         - () => queue | null
  */
+export function annotateError(err) {
+  const e = err.toLowerCase();
+  if (e.includes("typeerror"))                              return "  → null/undefined access — trace which variable is undefined and why";
+  if (e.includes("referenceerror"))                        return "  → variable not defined — check imports and initialization order";
+  if (e.includes("chunkloaderror") || e.includes("failed to load resource")) return "  → JS/CSS chunk failed to load — check build output and import paths";
+  if (e.includes("hydration"))                             return "  → server/client render mismatch — component returned different output on hydration";
+  if (e.includes("module not found"))                      return "  → missing module — check import path exists";
+  if (e.includes("unhandled promise rejection"))           return "  → async error not caught — trace the rejected promise";
+  return null;
+}
+
+export function annotateApiStatus(status) {
+  if (status >= 500)                   return "  → server error — out of scope for frontend agent, record in outOfScopeIssues";
+  if (status === 404)                  return "  → route not found — check route file exists and is registered";
+  if (status === 401 || status === 403) return "  → auth/permission error — out of scope, record in outOfScopeIssues";
+  if (status === 400)                  return "  → bad request — check request payload shape matches API contract";
+  if (status === "connection-error")   return "  → backend not reachable (ECONNREFUSED) — dev server may not be running";
+  return null;
+}
+
+function emitRuntimeChecks(rc, lines, prefix = "  ") {
+  if (!rc) return;
+  if (rc.nextjsErrorOverlay)             lines.push(`${prefix}[RC] Next.js error overlay present — crash at render time`);
+  if (rc.nextjsRootChildren === 0)       lines.push(`${prefix}[RC] Next.js root empty — hydration likely failed entirely`);
+  if (rc.nuxtError)                      lines.push(`${prefix}[RC] Nuxt runtime error detected`);
+  if (!rc.pageHasContent)                lines.push(`${prefix}[RC] Page body empty (scrollHeight ≤ 100px)`);
+  if ((rc.brokenImages ?? []).length)    lines.push(`${prefix}[RC] Broken images: ${rc.brokenImages.join(", ")}`);
+  if ((rc.failedResources ?? []).length) lines.push(`${prefix}[RC] Failed resource loads: ${rc.failedResources.join(", ")}`);
+  if (rc.swState === "error")            lines.push(`${prefix}[RC] SW threw during registration — check service worker file`);
+  if (rc.swState === "unregistered")     lines.push(`${prefix}[RC] SW not registered — registration call may not be executing`);
+  if (rc.notificationPermission === "denied") lines.push(`${prefix}[RC] Notification permission denied by browser`);
+  if (rc.pushSupported === false)        lines.push(`${prefix}[RC] PushManager not available in this browser context`);
+  if ((rc.appErrorCount ?? 0) > 0)      lines.push(`${prefix}[RC] App reported ${rc.appErrorCount} global error(s) via window.__errors`);
+}
+
+export function buildSmokeDiagnostic(rawJson) {
+  let report;
+  try { report = JSON.parse(rawJson); } catch { return ""; }
+
+  if (report.skipped) return "\n## Smoke diagnostic\nSmoke skipped — no page files changed.";
+  if (report.authIssue) {
+    const profiles = (report.staleProfiles ?? []).join(", ") || "none configured";
+    return `\n## Smoke diagnostic\nBlocked by auth (${report.authIssue}). Profiles: ${profiles}.`;
+  }
+
+  const lines = ["\n## Smoke diagnostic"];
+  const checked = report.pagesChecked ?? [];
+  const failures = report.failures ?? [];
+  const allRc = report.runtimeChecks ?? {};
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  lines.push(`Pages checked (${checked.length}): ${checked.map(p => `${p.url} [${p.status}]`).join(", ") || "none"}`);
+  lines.push(`API calls total: ${report.apiCallCount ?? (report.apiCallsChecked ?? []).length}`);
+  if (failures.length === 0) lines.push(`Result: all pages passed`);
+
+  // ── Per-page full breakdown (ALL pages, pass and fail) ───────────────────
+  // No filtering — the fix agent sees everything for every page.
+  for (const p of checked) {
+    const isFail = p.status !== "pass";
+    lines.push(`\n### ${isFail ? "FAIL" : "PASS"}: ${p.url}`);
+
+    // Render
+    if (p.pageError) lines.push(`  Render error: "${p.pageError}"`);
+    const rs = p.renderSummary;
+    if (rs) {
+      lines.push(`  Render: headings=${rs.headingCount ?? "?"} nav=${rs.navPresent} main=${rs.mainPresent} spinner=${rs.stuckSpinner ?? false}`);
+    }
+
+    // Console errors
+    for (const err of (p.consoleErrors ?? [])) {
+      lines.push(`  ConsoleError: ${err}`);
+      const hint = annotateError(err);
+      if (hint) lines.push(hint);
+    }
+
+    // Console warnings (per-page if available; else shown globally below)
+    for (const w of (p.consoleWarnings ?? [])) {
+      lines.push(`  ConsoleWarn: ${w}`);
+    }
+
+    // API calls (all, not just failures) — annotate non-2xx inline
+    const apiAll = p.apiCalls ?? [];
+    const apiFailures = p.apiFailures ?? [];
+    if (apiAll.length) {
+      lines.push(`  API calls (${apiAll.length}):`);
+      for (const a of apiAll) {
+        lines.push(`    ${a.method} ${a.url} → ${a.status}`);
+        const hint = annotateApiStatus(a.status);
+        if (hint) lines.push(`  ${hint}`);
+      }
+    } else if (apiFailures.length) {
+      lines.push(`  API failures:`);
+      for (const api of apiFailures) {
+        lines.push(`    ${api.method} ${api.url} → ${api.status}`);
+        const hint = annotateApiStatus(api.status);
+        if (hint) lines.push(`  ${hint}`);
+      }
+    }
+
+    // Runtime checks — always emit for every page
+    emitRuntimeChecks(allRc[p.url], lines, "  ");
+
+    // Screenshot
+    if (p.screenshotPath) lines.push(`  Screenshot: ${p.screenshotPath}`);
+
+    // Issues list
+    if ((p.issues ?? []).length) {
+      lines.push(`  Issues: ${p.issues.join(" | ")}`);
+    }
+  }
+
+  // ── Global console warnings (if not per-page above) ──────────────────────
+  const allWarnings = report.consoleWarnings ?? [];
+  const perPageWarnings = checked.flatMap(p => p.consoleWarnings ?? []);
+  const globalWarnings = allWarnings.filter(w => !perPageWarnings.includes(w));
+  if (globalWarnings.length) {
+    lines.push(`\n### Console warnings (global)`);
+    for (const w of globalWarnings) lines.push(`  ${w}`);
+  }
+
+  // ── API calls overview (connection errors from apiCallsChecked) ───────────
+  const allApiCalls = report.apiCallsChecked ?? [];
+  const connectionErrors = allApiCalls.filter(a => a.status === "connection-error");
+  if (connectionErrors.length) {
+    lines.push(`\n### Backend connection errors (ECONNREFUSED — not counted as page failures)`);
+    for (const c of connectionErrors) lines.push(`  ${c.method} ${c.url}`);
+  }
+
+  // ── Aggregate console errors not attributed to any page ──────────────────
+  const allErrors = report.consoleErrors ?? [];
+  const pageErrors = new Set(checked.flatMap(p => p.consoleErrors ?? []));
+  const orphanErrors = allErrors.filter(e => !pageErrors.has(e));
+  if (orphanErrors.length) {
+    lines.push(`\n### Console errors (not attributed to a specific page)`);
+    for (const e of orphanErrors) {
+      lines.push(`  ${e}`);
+      const hint = annotateError(e);
+      if (hint) lines.push(hint);
+    }
+  }
+
+  // ── Scope guidance ────────────────────────────────────────────────────────
+  lines.push(`\nScope: render errors / console JS errors / hydration / SW / broken assets → frontend`);
+  lines.push(`       5xx API / DB / auth logic → backend (record in outOfScopeIssues)`);
+  lines.push(`       4xx on your own routes → check route file exists and is registered`);
+
+  return lines.join("\n");
+}
+
 export function createPromptBuilder({
   PROMPTS_DIR,
   AGENTS_DIR,
@@ -199,7 +348,10 @@ Current cycle: ${cycle.id}`;
     const smokeSuffix = cycle.taskGroup ? `-${cycle.taskGroup}` : "";
     const smokeReportRaw = readCycleState(`smoke${smokeSuffix}.json`);
     const smokeFailureDetails = smokeReportRaw
-      ? `\n## Smoke failure details\n\`\`\`json\n${smokeReportRaw}\n\`\`\``
+      ? `\n## Smoke failure details (raw)\n\`\`\`json\n${smokeReportRaw}\n\`\`\``
+      : "";
+    const smokeFailureSummary = smokeReportRaw
+      ? buildSmokeDiagnostic(smokeReportRaw)
       : "";
 
     let templateContent;
@@ -255,9 +407,11 @@ Current cycle: ${cycle.id}`;
       .replace(/\{\{TEST_FAILURE_DETAILS\}\}/g, testFailureDetails)
       .replace(/\{\{PRIOR_TEST_ATTEMPT\}\}/g, priorTestAttempt)
       .replace(/\{\{SMOKE_FAILURE_DETAILS\}\}/g, smokeFailureDetails)
+      .replace(/\{\{SMOKE_FAILURE_SUMMARY\}\}/g, smokeFailureSummary)
       .replace(/\{\{MAX_RETRIES\}\}/g, String(MAX_RETRIES))
       .replace(/\{\{DEV_SERVER_URL\}\}/g, cycle.devServerUrl ?? "")
-      .replace(/\{\{SNAPSHOT_DIR\}\}/g, SNAPSHOT_RELDIR ?? "");
+      .replace(/\{\{SNAPSHOT_DIR\}\}/g, SNAPSHOT_RELDIR ?? "")
+      .replace(/\{\{AUTH_PROFILES_JSON\}\}/g, cycle.authProfilesJson ?? "[]");
 
     return templateContent;
   }

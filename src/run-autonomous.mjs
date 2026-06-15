@@ -9,6 +9,17 @@
 import chalk from "chalk";
 import { appendFileSync, mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "fs";
 import { join, relative } from "path";
+import { execSync as _execSync, spawn as _spawn } from "child_process";
+
+// Resolve claude executable (same logic as cycle-runner.mjs) for pre-smoke mini runs
+const CLAUDE_EXE = (() => {
+  if (process.platform !== "win32") return "claude";
+  try {
+    const lines = _execSync("where.exe claude", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      .trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    return lines.find(l => l.toLowerCase().endsWith(".cmd")) ?? lines[0] ?? "claude";
+  } catch { return "claude"; }
+})();
 import {
   validateCycleOutput,
   validateTaskQueue,
@@ -24,6 +35,9 @@ import { createScopeManager } from "./engine/scope-manager.mjs";
 import { createQueueManager } from "./engine/queue-manager.mjs";
 import { createPromptBuilder } from "./engine/prompt-builder.mjs";
 import { createCycleRunner } from "./engine/cycle-runner.mjs";
+import { createSmokeOrchestrator } from "./engine/smoke-orchestrator.mjs";
+import { mergeProbeUrls } from "./engine/probe-urls.mjs";
+import { scanAllRoutes, deriveFrontendRoot, detectFramework } from "./engine/route-scanner.mjs";
 
 // ── Load Config ───────────────────────────────────────────────────────────────
 
@@ -231,6 +245,173 @@ const { runCycle, runCycleBatch, getEffectiveMaxRetries } = createCycleRunner({
   notify,
 });
 
+const { runSmokeOrchestration } = createSmokeOrchestrator({
+  ROOT, HARNESS_DIR, CYCLE_DIR, RUNS_DIR,
+  config, CLAUDE_EXE, appendLog,
+  buildFilteredMcpServers: (agentName) => buildFilteredMcpServers(agentName, { config, ROOT }),
+});
+
+// ── Pre-smoke step ────────────────────────────────────────────────────────────
+
+async function runPreSmokeStep() {
+  console.log(chalk.dim("[PRE-SMOKE] Detecting changed URLs..."));
+
+  // 1. Read snapshot.json → extract changed file paths
+  const snapshotFile = join(SNAPSHOT_DIR, "snapshot.json");
+  let changedFiles = [];
+  try {
+    const snapshot = JSON.parse(readFileSync(snapshotFile, "utf8"));
+    changedFiles = Object.keys(snapshot.index ?? snapshot ?? {});
+  } catch { /* snapshot missing or malformed — proceed with empty list */ }
+
+  // 2. Write changed-files.json
+  const changedFilesOut = join(CYCLE_DIR, "changed-files.json");
+  writeFileSync(changedFilesOut, JSON.stringify({ files: changedFiles }, null, 2), "utf8");
+
+  // 3. Build url-detector prompt from template — inject changed-files inline
+  const templatePath = join(PROMPTS_DIR, "url-detector.md");
+  let promptText;
+  const frontendRoot = deriveFrontendRoot(config);
+  const detectedFramework = detectFramework(ROOT, frontendRoot);
+  try {
+    promptText = readFileSync(templatePath, "utf8")
+      .replace(/\{\{CYCLE_STATE_DIR\}\}/g, CYCLE_STATE_RELDIR)
+      .replace(/\{\{CHANGED_FILES_JSON\}\}/g, JSON.stringify({ files: changedFiles }, null, 2))
+      .replace(/\{\{FRONTEND_ROOT\}\}/g, frontendRoot)
+      .replace(/\{\{FRAMEWORK\}\}/g, detectedFramework);
+  } catch {
+    console.log(chalk.yellow("[PRE-SMOKE] url-detector.md template not found — skipping URL detection"));
+    writeFileSync(join(CYCLE_DIR, "probe-urls.json"), JSON.stringify({ urls: [], layoutAffected: false, framework: "unknown" }, null, 2), "utf8");
+    return;
+  }
+
+  // 4. Spawn mini claude
+  const probeUrlsOut = join(CYCLE_DIR, "probe-urls.json");
+  const isWindows = process.platform === "win32";
+
+  // Capture stdout — in --output-format text mode Claude often prints the JSON as its
+  // text response rather than using the Write tool. We accept either: if the Write tool
+  // wrote probe-urls.json that takes precedence; otherwise we parse stdout as fallback.
+  let stdoutBuf = "";
+
+  await new Promise((resolve) => {
+    let proc;
+    const timeout = setTimeout(() => {
+      try { proc?.kill(); } catch { /* already gone */ }
+      resolve();
+    }, 120_000);
+
+    if (isWindows) {
+      const promptFile = join(RUNS_DIR, `url-detector-prompt-${Date.now()}.txt`);
+      const psFile = join(RUNS_DIR, `url-detector-${Date.now()}.ps1`);
+      writeFileSync(promptFile, promptText, "utf8");
+      writeFileSync(
+        psFile,
+        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read,Write" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
+        "utf8",
+      );
+      proc = _spawn(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", psFile],
+        { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } else {
+      proc = _spawn(
+        CLAUDE_EXE,
+        ["-p", promptText, "--allowedTools", "Read,Write", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
+        { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    }
+
+    proc.stdout.on("data", (chunk) => { stdoutBuf += chunk.toString("utf8"); });
+    proc.on("close", () => { clearTimeout(timeout); resolve(); });
+    proc.on("error", () => { clearTimeout(timeout); resolve(); });
+  });
+
+  // 5. If url-detector didn't write probe-urls.json via Write tool, try parsing stdout.
+  //    In --output-format text mode Claude often prints JSON as its text response.
+  if (!existsSync(probeUrlsOut)) {
+    const jsonMatch = stdoutBuf.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (typeof parsed.framework === "string") {
+          writeFileSync(probeUrlsOut, JSON.stringify(parsed, null, 2), "utf8");
+          console.log(chalk.dim("[PRE-SMOKE] URL detector output captured from stdout"));
+        }
+      } catch { /* malformed — fall through */ }
+    }
+  }
+
+  if (!existsSync(probeUrlsOut)) {
+    console.log(chalk.yellow("[PRE-SMOKE] URL detector produced no output — falling back to filesystem scan"));
+    const FILE_BASED_FW = new Set(["nextjs-app-router", "nextjs-pages-router", "nuxt", "sveltekit"]);
+    const fallbackUrls = FILE_BASED_FW.has(detectedFramework)
+      ? scanAllRoutes(ROOT, frontendRoot, detectedFramework)
+      : [];
+    writeFileSync(probeUrlsOut, JSON.stringify({ urls: fallbackUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
+    if (fallbackUrls.length) {
+      console.log(chalk.dim(`[PRE-SMOKE] ${fallbackUrls.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+    }
+  }
+
+  // 6. Merge smokeUrls + filesystem-scanned routes into probe-urls.json
+  const configSmokeUrls = Array.isArray(config.smokeUrls) ? config.smokeUrls : [];
+  const FILE_BASED_FRAMEWORKS = new Set(["nextjs-app-router", "nextjs-pages-router", "nuxt", "sveltekit"]);
+  try {
+    const probe = JSON.parse(readFileSync(probeUrlsOut, "utf8"));
+    // Engine-detected framework takes precedence — LLM may output "unknown" when only
+    // hooks/components changed and no page files appear in the diff.
+    const framework = (probe.framework && probe.framework !== "unknown")
+      ? probe.framework
+      : detectedFramework;
+    let currentUrls = probe.urls ?? [];
+
+    // Merge user-configured smokeUrls (always)
+    const { merged: afterSmoke, appended } = mergeProbeUrls(currentUrls, configSmokeUrls);
+    currentUrls = afterSmoke;
+
+    // When layoutAffected OR no URLs detected yet: scan filesystem to guarantee coverage
+    let scannedCount = 0;
+    if ((probe.layoutAffected || !currentUrls.length) && FILE_BASED_FRAMEWORKS.has(framework)) {
+      const scanned = scanAllRoutes(ROOT, frontendRoot, framework);
+      const before = currentUrls.length;
+      currentUrls = [...new Set([...currentUrls, ...scanned])];
+      scannedCount = currentUrls.length - before;
+    }
+
+    const changed = appended.length || scannedCount > 0;
+    if (changed) {
+      writeFileSync(probeUrlsOut, JSON.stringify({ ...probe, urls: currentUrls }, null, 2), "utf8");
+    }
+
+    if (currentUrls.length) {
+      const parts = [];
+      if ((probe.urls ?? []).length) parts.push(`${(probe.urls ?? []).length} detected`);
+      if (appended.length) parts.push(`+${appended.length} from smokeUrls`);
+      if (scannedCount) parts.push(`+${scannedCount} scanned (layoutAffected)`);
+      console.log(chalk.dim(`[PRE-SMOKE] ${currentUrls.length} URL(s) via ${framework} (${parts.join(", ")}) → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+    } else {
+      console.log(chalk.yellow(`[PRE-SMOKE] No URLs to probe (framework: ${framework}) — add routes to smokeUrls[] in harness.config.json`));
+    }
+  } catch (err) {
+    // Log the real error for debugging
+    console.log(chalk.yellow(`[PRE-SMOKE] route merge failed (${err?.message ?? String(err)}) — falling back to filesystem scan`));
+    try {
+      const fallbackUrls = FILE_BASED_FRAMEWORKS.has(detectedFramework)
+        ? scanAllRoutes(ROOT, frontendRoot, detectedFramework)
+        : [];
+      const merged = mergeProbeUrls(fallbackUrls, configSmokeUrls).merged;
+      if (merged.length) {
+        writeFileSync(probeUrlsOut, JSON.stringify({ urls: merged, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
+        console.log(chalk.dim(`[PRE-SMOKE] ${merged.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+      } else {
+        console.log(chalk.yellow(`[PRE-SMOKE] No URLs to probe — add routes to smokeUrls[] in harness.config.json`));
+      }
+    } catch { /* filesystem scan also failed */ }
+  }
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -378,7 +559,42 @@ async function main() {
       );
     }
 
-    const batchResults = await runCycleBatch(batch, remaining);
+    // Run pre-smoke step before any batch that contains a smoke cycle
+    if (batch.some(c => c.type === "smoke")) {
+      await runPreSmokeStep();
+    }
+
+    // Intercept single-smoke batches — use the Node.js orchestrator instead of a full Claude session
+    let batchResults;
+    if (batch.length === 1 && batch[0].type === "smoke") {
+      const cycle = batch[0];
+      // start dev server for smoke
+      const dsCfg = config.devServer ?? null;
+      let devServerProcs = [];
+      let devServerUrl = "";
+      if (dsCfg) {
+        const { startDevServer: _startDs } = await import("./engine/process-utils.mjs");
+        const dsResult = await _startDs(dsCfg, { ROOT });
+        devServerProcs = dsResult.procs;
+        devServerUrl = dsResult.browserUrl;
+      }
+
+      const probeUrlsPath = join(CYCLE_DIR, "probe-urls.json");
+      const probeUrlsJson = existsSync(probeUrlsPath)
+        ? readFileSync(probeUrlsPath, "utf8")
+        : '{"urls":[],"layoutAffected":false}';
+
+      const result = await runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl);
+      devServerProcs.forEach(p => killProc(p));
+
+      // Clean up smoke temp assets
+      for (const f of ["changed-files.json", "probe-urls.json"]) {
+        try { unlinkSync(join(CYCLE_DIR, f)); } catch { /* already gone */ }
+      }
+      batchResults = [{ cycle, result }];
+    } else {
+      batchResults = await runCycleBatch(batch, remaining);
+    }
     let shouldBreak = false;
 
     for (const { cycle, result } of batchResults) {
@@ -393,7 +609,7 @@ async function main() {
 
         if (cycle.outputFile) {
           const rawJson = readCycleState(cycle.outputFile);
-          const isCritical = CRITICAL_OUTPUT_FILES.has(cycle.outputFile) || cycle.type === "test";
+          const isCritical = CRITICAL_OUTPUT_FILES.has(cycle.outputFile) || cycle.type === "test" || cycle.type === "smoke";
 
           if (!rawJson) {
             if (isCritical) {
@@ -453,12 +669,15 @@ async function main() {
           writeQueue(queue);
           appendSessionCycle(`[autonomous] ${cycle.id}`, "done");
 
+          const turnLabel = cycle.type === "smoke"
+            ? `${result.turnCount ?? 0} URL${(result.turnCount ?? 0) !== 1 ? "s" : ""} checked`
+            : `${result.turnCount ?? 0} turns`;
           if (batch.length === 1)
-            console.log(`  ${chalk.green("[OK]")} ${chalk.dim(`${result.turnCount} turns`)}`);
+            console.log(`  ${chalk.green("[OK]")} ${chalk.dim(turnLabel)}`);
           else
-            console.log(`  ${chalk.green("[OK]")} ${chalk.cyan(cycle.id)} ${chalk.dim(`— ${result.turnCount} turns`)}`);
+            console.log(`  ${chalk.green("[OK]")} ${chalk.cyan(cycle.id)} ${chalk.dim(`— ${turnLabel}`)}`);
 
-          notify("Claude — Cycle Complete", `${cycle.id} | ${result.turnCount} turns`, {
+          notify("Claude — Cycle Complete", `${cycle.id} | ${turnLabel}`, {
             event: "cycle-complete", cycleId: cycle.id, cycleType: cycle.type, attempt, turnCount: result.turnCount,
           });
 
@@ -528,10 +747,10 @@ async function main() {
               (sg ? c.taskGroup === sg : !c.taskGroup) &&
               (c.status === "done" || c.id === cycle.id)
             ).length;
-            if (!testReport.passed && !testReport.skipped && !testReport.partial && totalSmokeAttempts <= MAX_RETRIES) {
+            if (!testReport.passed && !testReport.skipped && !testReport.partial && !testReport.authIssue && totalSmokeAttempts <= MAX_RETRIES) {
               const failures = testReport.failures ?? [];
-              const hasFrontendFailure = failures.some((f) => f.page);
-              const hasApiFailure = failures.some((f) => f.url);
+              const hasFrontendFailure = failures.some((f) => f.pageError != null || (f.issues?.length && !f.apiFailures?.length));
+              const hasApiFailure = failures.some((f) => Array.isArray(f.apiFailures) && f.apiFailures.length > 0);
               const surfaces = [];
               if (hasFrontendFailure) surfaces.push("frontend");
               if (hasApiFailure) surfaces.push("backend");
@@ -546,7 +765,7 @@ async function main() {
                 ...(cycle.subTask ? { subTask: cycle.subTask } : {}),
                 status: "pending",
                 outputFile: `fix-${surface}-smoke-attempt-${totalSmokeAttempts}${sgSuffix}.json`,
-                notes: `Fix injected after smoke failure attempt ${totalSmokeAttempts}: ${failures.map((f) => f.issue).slice(0, 3).join("; ")}`,
+                notes: `Fix injected after smoke failure attempt ${totalSmokeAttempts}: ${failures.map((f) => f.issues?.[0] ?? f.issue ?? "unknown").slice(0, 3).join("; ")}`,
               }));
               const retrySmoke = {
                 id: `smoke-retry-${totalSmokeAttempts}${sgSuffix}`,

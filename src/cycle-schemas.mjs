@@ -66,15 +66,27 @@ const TargetEntry = z.union([
   z.object({ project: z.string().optional(), target: z.string().optional(), result: z.string().optional() }).passthrough(),
 ]);
 const TestWrittenEntry = z.union([z.string(), z.object({}).passthrough()]);
+const FailureEntry = z.union([z.string(), z.object({}).passthrough()]);
 
 export const TestReport = z.object({
   passed: z.boolean(),
   targetsRun: z.array(TargetEntry),
-  failures: z.array(z.string()).optional(),
+  failures: z.array(FailureEntry).optional(),
   failedSurfaces: z.array(z.string()).optional(),
   coverageGaps: z.array(z.string()).optional(),
   testsWritten: z.array(TestWrittenEntry).optional(),
 });
+
+export const SmokeReport = z.object({
+  passed: z.boolean(),
+  skipped: z.boolean().optional(),
+  reason: z.string().optional(),
+  authIssue: z.enum(["missing", "stale"]).optional(),
+  affectedPages: z.array(z.string()).optional(),
+  pagesChecked: z.array(z.object({ url: z.string(), httpStatus: z.number().optional() }).passthrough()).optional(),
+  apiCallsChecked: z.array(z.object({ url: z.string(), status: z.union([z.number(), z.string()]).optional() }).passthrough()).optional(),
+  failures: z.array(z.union([z.string(), z.object({}).passthrough()])).optional(),
+}).passthrough();
 
 export const FixReport = z.object({
   fixed: z.array(z.string()),
@@ -174,6 +186,7 @@ const SCHEMA_REGISTRY = [
   { pattern: /^reconcile(-[^.]+)?\.json$/,  schema: ReconcileReport, name: 'ReconcileReport' },
   { pattern: /^test(-[^.]+)?\.json$/,       schema: TestReport,      name: 'TestReport'      },
   { pattern: /^fix-.+\.json$/,              schema: FixReport,       name: 'FixReport'       },
+  { pattern: /^smoke(-[^.]+)?\.json$/,      schema: SmokeReport,     name: 'SmokeReport'     },
 ];
 
 /**
@@ -218,12 +231,13 @@ export function validateTaskQueue(raw) {
  *               missing field = use conservative default (e.g. passed: false)
  *   non-critical → invalid JSON or mismatch = warn + continue with partial data
  */
-export const CRITICAL_OUTPUT_FILES = new Set(['test.json']);
+export const CRITICAL_OUTPUT_FILES = new Set(['test.json', 'smoke.json']);
 
 /**
  * Conservative defaults for critical fields when schema validation finds them
  * missing or wrong-typed. Used by the outer loop, not by validateCycleOutput.
  */
 export const CONSERVATIVE_DEFAULTS = {
-  'test.json': { passed: false, targetsRun: [], failedSurfaces: [], failures: [] },
+  'test.json':  { passed: false, targetsRun: [], failedSurfaces: [], failures: [] },
+  'smoke.json': { passed: false, failures: [] },
 };

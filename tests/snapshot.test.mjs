@@ -87,6 +87,33 @@ test('createPreRunSnapshot: does nothing when working tree is clean', () => {
   }
 });
 
+test('createPreRunSnapshot: skips lock files (package-lock.json, yarn.lock, etc.)', () => {
+  const root = makeTmpDir();
+  const snapshotDir = join(root, '.harness', 'snapshot');
+  try {
+    const lockFiles = [
+      'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+      'bun.lockb', 'composer.lock', 'Gemfile.lock', 'Cargo.lock', 'poetry.lock',
+    ];
+    for (const f of lockFiles) writeFileSync(join(root, f), `lock content for ${f}`);
+    mkdirSync(join(root, 'api'), { recursive: true });
+    writeFileSync(join(root, 'api/real.ts'), 'real file');
+
+    const snap = makeSnap(root, snapshotDir, {
+      modifiedFiles: [...lockFiles, 'api/real.ts'],
+    });
+    snap.createPreRunSnapshot();
+
+    const index = snap.readIndex();
+    for (const f of lockFiles) {
+      expect(index[f]).toBeUndefined();
+    }
+    expect(index['api/real.ts']).toBeDefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('createPreRunSnapshot: silently skips files that do not exist on disk', () => {
   const root = makeTmpDir();
   const snapshotDir = join(root, '.harness', 'snapshot');

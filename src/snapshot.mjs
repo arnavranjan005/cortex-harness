@@ -13,7 +13,13 @@
  *   const restored = snap.restoreFromSnapshot(filePath);
  */
 
-import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
+import {
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+} from "fs";
 import { join, relative } from "path";
 
 export function createSnapshotManager({
@@ -44,11 +50,24 @@ export function createSnapshotManager({
     return join(snapshotDir, `blob-${sanitized}`);
   }
 
+  const SKIP_LOCK_FILES = new Set([
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "composer.lock",
+    "Gemfile.lock",
+    "Cargo.lock",
+    "poetry.lock",
+  ]);
+
   function captureFiles(filePaths) {
     if (!filePaths.length) return;
     mkdirSync(snapshotDir, { recursive: true });
     const index = readIndex();
     for (const f of filePaths) {
+      const basename = f.split(/[/\\]/).at(-1);
+      if (SKIP_LOCK_FILES.has(basename)) continue;
       const abs = join(root, f);
       if (!existsSync(abs)) continue;
       try {
@@ -75,7 +94,13 @@ export function createSnapshotManager({
       })
         .toString()
         .trim();
-      if (modified) dirty.push(...modified.split("\n").map((f) => f.trim()).filter(Boolean));
+      if (modified)
+        dirty.push(
+          ...modified
+            .split("\n")
+            .map((f) => f.trim())
+            .filter(Boolean),
+        );
 
       const untracked = execSync("git ls-files --others --exclude-standard", {
         cwd: root,
@@ -83,14 +108,22 @@ export function createSnapshotManager({
       })
         .toString()
         .trim();
-      if (untracked) dirty.push(...untracked.split("\n").map((f) => f.trim()).filter(Boolean));
+      if (untracked)
+        dirty.push(
+          ...untracked
+            .split("\n")
+            .map((f) => f.trim())
+            .filter(Boolean),
+        );
     } catch {
       return;
     }
 
     // Exclude the snapshot dir itself — its blobs are harness internals, not user files
     const snapshotRelDir = relative(root, snapshotDir).replace(/\\/g, "/");
-    dirty = dirty.filter((f) => !f.replace(/\\/g, "/").startsWith(snapshotRelDir + "/"));
+    dirty = dirty.filter(
+      (f) => !f.replace(/\\/g, "/").startsWith(snapshotRelDir + "/"),
+    );
 
     // Prune stale blobs — files no longer dirty have no business being in the snapshot
     const dirtySet = new Set(dirty.map((f) => f.replace(/\\/g, "/")));
@@ -101,7 +134,9 @@ export function createSnapshotManager({
         const blob = join(snapshotDir, index[key].blobFile);
         try {
           if (existsSync(blob)) unlinkSync(blob);
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
         delete index[key];
         pruned++;
       }
@@ -119,11 +154,15 @@ export function createSnapshotManager({
     // Reconcile cycles have no agent but can edit contract/shared files.
     // Same pattern as agent cycles — read outputFile filesChanged, no scope filter needed.
     if (!cycle.agent) {
-      if (cycle.type !== "reconcile") return;
+      if (!cycle?.type?.includes("reconcile")) return;
       const rawJson = readCycleState(cycle.outputFile);
       if (!rawJson) return;
       let report;
-      try { report = JSON.parse(rawJson); } catch { return; }
+      try {
+        report = JSON.parse(rawJson);
+      } catch {
+        return;
+      }
       const files = (report.filesChanged ?? [])
         .map((e) => (typeof e === "string" ? e : (e.file ?? e.path ?? "")))
         .filter(Boolean);

@@ -158,7 +158,7 @@ Reply with only the summary, no preamble.`;
     // Use agent name if set; fall back to cycle type so type-keyed mcpScope entries
     // (e.g. "smoke": ["playwright"]) work without needing a sub-agent file.
     const mcpKey = cycle.agent ?? cycle.type ?? null;
-    const filteredServers = buildFilteredMcpServers(mcpKey);
+    let filteredServers = buildFilteredMcpServers(mcpKey);
 
     // Start dev server when explicitly requested OR when the cycle's resolved MCP set
     // includes a browser-driving tool (playwright, puppeteer, etc.).

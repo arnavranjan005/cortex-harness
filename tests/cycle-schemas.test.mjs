@@ -77,6 +77,71 @@ test('accepts object residualRisks entries in reconcile.json', () => {
   expect(result.valid).toBe(true);
 });
 
+// ── SmokeReport (smoke.json) ──────────────────────────────────────────────────
+
+test('validates a minimal passing smoke.json', () => {
+  const result = validateCycleOutput('smoke.json', {
+    passed: true,
+    pagesChecked: [{ url: '/reports', status: 'pass' }],
+    apiCallsChecked: [],
+    failures: [],
+  });
+  expect(result.valid).toBe(true);
+});
+
+test('validates a skipped smoke.json', () => {
+  const result = validateCycleOutput('smoke.json', {
+    passed: true,
+    skipped: true,
+    reason: 'no page files changed',
+    pagesChecked: [],
+    apiCallsChecked: [],
+    failures: [],
+  });
+  expect(result.valid).toBe(true);
+});
+
+test('validates a smoke.json with authIssue', () => {
+  const result = validateCycleOutput('smoke.json', {
+    passed: false,
+    authIssue: 'missing',
+    affectedPages: ['/reports'],
+    pagesChecked: [],
+    apiCallsChecked: [],
+    failures: [],
+  });
+  expect(result.valid).toBe(true);
+});
+
+test('rejects smoke.json missing passed field', () => {
+  const result = validateCycleOutput('smoke.json', {
+    pagesChecked: [],
+    failures: [],
+  });
+  expect(result.valid).toBe(false);
+});
+
+test('validates group-suffixed smoke-frontend.json against SmokeReport schema', () => {
+  const result = validateCycleOutput('smoke-frontend.json', {
+    passed: false,
+    failures: [{ url: '/invoices', pageError: '500', issues: ['render failed'] }],
+    pagesChecked: [{ url: '/invoices', status: 'fail' }],
+    apiCallsChecked: [],
+  });
+  expect(result.valid).toBe(true);
+});
+
+test('smoke.json is in CRITICAL_OUTPUT_FILES', () => {
+  expect(CRITICAL_OUTPUT_FILES.has('smoke.json')).toBe(true);
+});
+
+test('CONSERVATIVE_DEFAULTS for smoke.json sets passed: false with empty failures', () => {
+  const defaults = CONSERVATIVE_DEFAULTS['smoke.json'];
+  expect(defaults).toBeDefined();
+  expect(defaults.passed).toBe(false);
+  expect(Array.isArray(defaults.failures)).toBe(true);
+});
+
 // ── validateTaskQueue ─────────────────────────────────────────────────────────
 
 test('validates a minimal valid task queue', () => {

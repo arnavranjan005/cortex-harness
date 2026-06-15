@@ -22,7 +22,7 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 | reconcile | `reconcile` | Contract check + gap resolution + consistency |
 | reconcile-cross-group | `reconcile` | Multi-intent only — checks contracts across all groups; may emit `requiresAdditionalGroups` to inject new cycle groups |
 | test | `test` | `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 clean retries |
-| smoke | `smoke` | Browser pass after test — playwright MCP auto-scoped, dev server auto-started via browser MCP detection; emitted only for groups with an implement-frontend cycle |
+| smoke | `smoke` | Browser pass after test — Node.js orchestrator (`createSmokeOrchestrator`) runs per-URL mini-Claude sessions with Playwright MCP; emitted only for groups with an implement-frontend cycle. A pre-smoke step runs `url-detector.md` LLM prompt to extract changed page URLs, falls back to `route-scanner.mjs` filesystem scan; merges with `smokeUrls[]` from config. Auth profiles injected at runtime from `authProfiles[]` in `harness.config.json`. |
 | fix-* | `fix` | Injected dynamically on test failure, up to MAX_RETRIES=2 |
 | recovery | `recovery` | Injected after MAX_RETRIES exhausted — reads orchestration.md, re-chains |
 | deliver | `deliver` | Reads all cycle-state/ files, produces unified summary |
@@ -98,7 +98,8 @@ Every cycle must end its final message with exactly one:
 - **Dead man timer**: `DEAD_MAN_MS = 20 min` — force-kills subprocess on silence
 - **Turn cap**: test cycle 25 turns/slice (up to 10 clean retries); smoke cycle 20 turns/slice (up to 10 clean retries); all others 500 safety ceiling
 - **Scope revert**: out-of-scope writes cascade through `git restore → git clean -f → git show HEAD → unlinkSync`
-- **Smoke gate in deliver**: if any `smoke*.json` has `passed: false` and `skipped != true`, deliver does NOT write a normal summary — it emits only a Smoke failures section and ends with `NEEDS_HUMAN_INPUT`
+- **Smoke failures in deliver**: smoke failures become residual risks in the delivery summary (not blockers). Deliver always ends with `CYCLE_COMPLETE`. Only infrastructure/credentials failures should be `HUMAN_APPROVAL_REQUIRED`.
+- **Snapshot lock-file skipping**: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `composer.lock`, `Gemfile.lock`, `Cargo.lock`, `poetry.lock` are silently skipped during snapshot capture to avoid spurious restore churn.
 
 ## Multi-intent decomposition
 
@@ -128,8 +129,22 @@ All injected cycles inherit `taskGroup` and `subTask` from the triggering cycle 
 
 `cycle-schemas.mjs` validates all cycle output files after each cycle completes:
 - `test.json` / `test-<group>.json` is critical: invalid JSON → treat as failed; missing `passed` field → default `false`
+- `smoke.json` / `smoke-<group>.json` is critical: invalid JSON → treat as failed; conservative default `{ passed: false, failures: [] }`. Schema: `SmokeReport` (Zod) — accepts `passed`, `skipped`, `authIssue`, `pagesChecked`, `apiCallsChecked`, `failures` (passthrough for extra fields).
 - `reconcile-cross-group.json` is non-critical: invalid JSON → skip `requiresAdditionalGroups` check, continue
 - All other files: warn + continue (wrong structure means less context, not wrong execution path)
 - Schema registry patterns use `(-[^.]+)?` suffix matching so group-suffixed files validate against the same schemas
+
+## Smoke diagnostic injection
+
+`buildSmokeDiagnostic(rawJson)` in `prompt-builder.mjs` pre-interprets `smoke*.json` into a human-readable Markdown diagnostic before injecting it into fix-cycle prompts via `{{SMOKE_FAILURE_SUMMARY}}`. This replaces the raw JSON dump — fix agents read structured hints, not raw output. `annotateError()` and `annotateApiStatus()` provide inline triage hints per error type.
+
+## Auth profiles for smoke cycles
+
+`harness.config.json` supports:
+- `authProfiles: [{ name, storageFile }]` — named browser sessions; injected as `mcp__playwright-<name>__*` MCP servers at smoke runtime
+- `smokeUrls: []` — additional URLs always included in probe-urls.json regardless of what changed
+- `smokeCheckBudgetPerUrl: 0.80` — per-URL Claude budget in USD
+
+Run `cortex-harness auth [--profile <name>]` to capture a browser session. The `init` wizard prompts for this when a dev server is detected. Auth state is never committed — `.gitignore` is patched automatically.
 
 [[feedback-claude-md-compliance]]
