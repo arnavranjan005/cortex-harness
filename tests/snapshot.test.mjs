@@ -240,13 +240,13 @@ test('refreshSnapshot: refreshes non-implement cycle types too', () => {
     });
     snap.createPreRunSnapshot();
 
-    const timeBefore = snap.readIndex()['api/x.ts']?.capturedAt;
-
     writeFileSync(join(root, 'api/x.ts'), Buffer.from('updated\n'));
     snap.refreshSnapshot({ id: 'reconcile-g1', type: 'reconcile', agent: 'backend-subagent', outputFile: 'reconcile.json' });
-    const timeAfter = snap.readIndex()['api/x.ts']?.capturedAt;
-
-    expect(timeAfter).not.toBe(timeBefore);
+    const afterIndex = snap.readIndex();
+    const blobFile = join(snapshotDir, afterIndex['api/x.ts'].blobFile);
+    // Check blob content rather than capturedAt — timestamps can collide when both
+    // calls land in the same millisecond on fast machines
+    expect(readFileSync(blobFile).toString()).toBe('updated\n');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
