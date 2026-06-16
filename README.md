@@ -1,8 +1,14 @@
 # Cortex — Autonomous Nx Agent Harness
 
-> A config-driven, multi-cycle autonomous agent harness for Nx monorepos. Orchestrates Claude Code sub-agents through a deterministic state machine — explore, plan, implement, reconcile, test, and deliver — with Zod-validated state, git-enforced scope boundaries, self-healing fix injection, and multi-intent task decomposition.
+[![npm version](https://img.shields.io/npm/v/cortex-harness?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/cortex-harness)
+[![npm downloads](https://img.shields.io/npm/dm/cortex-harness?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/cortex-harness)
+[![CI](https://img.shields.io/github/actions/workflow/status/arnavranjan005/cortex-harness/ci.yml?branch=main&label=CI&logo=github)](https://github.com/arnavranjan005/cortex-harness/actions/workflows/ci.yml)
+[![Node >=20](https://img.shields.io/node/v/cortex-harness?color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-![Cortex state machine](./open_agent_harness_full_state_machine.svg)
+> Cortex turns a Claude Code session into a supervised engineering team. You give it a task; it writes a typed cycle queue, dispatches git-scoped sub-agents in parallel, Zod-validates every output, auto-reverts scope violations using a non-destructive snapshot, and injects fix cycles when tests or browser smoke fails — repeating until the workspace is clean or chaining into the next run from residual risks.
+
+![Cortex runtime architecture](./cortex-harness-runtime.svg)
 
 ---
 
@@ -42,6 +48,7 @@ Start run
   └─ Test                  (nx affected build / test / lint, 25-turn slices)
        └─ [on fail] Fix ×MAX_RETRIES  (re-delegate to owning agent)
             └─ [exhausted] Recovery cycle
+  └─ Smoke                 (per-URL browser pass via Playwright MCP; auto-starts dev server)
   └─ Deliver               (summary, PR description, residual risks)
 ```
 
@@ -51,9 +58,9 @@ Start run
 Start run
   └─ Orchestrate           (decompose into ordered groups: fix → edit → implement)
   └─ Explore               (shared — one explore feeds all groups by default)
-  └─ [Group: fix-x]        (reproduce → implement → reconcile → test)
-  └─ [Group: edit-y]       (explore? → implement → reconcile → test)
-  └─ [Group: add-z]        (explore? → implement → reconcile → test)
+  └─ [Group: fix-x]        (reproduce → implement → reconcile → test → smoke)
+  └─ [Group: edit-y]       (explore? → implement → reconcile → test → smoke)
+  └─ [Group: add-z]        (explore? → implement → reconcile → test → smoke)
   └─ Reconcile-cross-group (verify shared contracts across all groups; may inject new groups)
   └─ Deliver
 ```
@@ -88,12 +95,16 @@ Scaffolds `.harness/` with prompt templates, agent role files, `CLAUDE.md`, `har
 
 ```bash
 npx cortex-harness init
+
+# Skip all interactive prompts — accept detected defaults
+npx cortex-harness init --yes
+npx cortex-harness init -y
 ```
 
 During init, Cortex walks your project tree, classifies directories by name pattern, and prompts you to confirm the mapping:
 
 ```
-  cortex-harness v1.3.0  —  init
+  cortex-harness v1.11.0  —  init
 ────────────────────────────────────────────────────────────────────────
 
   Scaffolding prompts
@@ -139,6 +150,21 @@ Agent `.agent.md` files use `<!-- cortex:surface -->` sentinels — their scope 
 .harness/notification-channels.local.json
 ```
 
+### 1a. Register auth profiles (optional, for authenticated smoke testing)
+
+If your app has login-gated pages, register a named auth profile so Cortex can probe them during the smoke cycle:
+
+```bash
+# Opens a headed browser — log in manually, then close the window
+cortex-harness auth
+
+# Named profile for multi-role testing
+cortex-harness auth --profile admin
+cortex-harness auth --profile customer
+```
+
+Cortex captures Playwright storage state and writes the profile to `harness.config.json` under `authProfiles`. During smoke runs, the matching `mcp__playwright-<name>__*` MCP server is injected automatically with the saved session.
+
 ### 2. Manage scopes
 
 Use the `config` command instead of editing `harness.config.json` directly:
@@ -159,6 +185,21 @@ cortex-harness config remove-scope frontend-subagent libs/shared/ui/
 
 Every `config` mutation updates both `harness.config.json` and the scope sections in `.harness/agents/*.agent.md` in one step.
 
+**Dev server management:**
+
+```bash
+# Print current devServer services table
+cortex-harness config dev-server
+
+# Auto-detect services and write to harness.config.json
+cortex-harness config dev-server detect
+
+# Remove devServer block from harness.config.json
+cortex-harness config dev-server clear
+```
+
+`detect` scans depth-1 subdirectories and the project root for known frameworks (Next.js, Vite, Angular, NestJS, Express, Django, FastAPI, Flask, Rails, Spring Boot, .NET, Go, Laravel, Rust) and writes a `devServer.services[]` block to config. The `init` command runs detection automatically when a dev server is found.
+
 ### 3. Run
 
 ```bash
@@ -178,6 +219,32 @@ This produces three ordered groups (`fix-search-filter` → `update-product-card
 ```bash
 cortex-harness resume
 ```
+
+### 4a. Chain runs automatically
+
+`chain` runs a task, extracts residual risks from the delivery, and automatically starts the next run to address them — repeating until no actionable risks remain or the run/budget cap is hit:
+
+```bash
+# Start a chained sequence
+cortex-harness chain "add product listing page with search and filters"
+
+# Continue from the last delivery (reads residual risks automatically)
+cortex-harness chain
+
+# Resume a blocked/partial run, then keep chaining
+cortex-harness chain resume
+
+# Options
+cortex-harness chain "task" --max-runs 5 --budget 100
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--max-runs <n>` | `3` | Maximum number of sequential runs |
+| `--budget <usd>` | `60` | Global USD cap across all chained runs |
+| `--resume-on-block` | off | Collect human answers for blocked cycles and resume within the chain |
+
+If a session-limit block is hit mid-chain, the chain stops immediately with a clear message — `cortex-harness chain resume` re-enters after your limit resets.
 
 ### 5. Check run status
 
@@ -244,12 +311,17 @@ Reverts are non-destructive: a pre-run snapshot captures uncommitted work before
 
 ## Config Reference
 
-| Field        | Type   | Default            | Description                                       |
-| ------------ | ------ | ------------------ | ------------------------------------------------- |
-| `harnessDir` | string | `.harness`         | Root directory for all harness files              |
-| `promptsDir` | string | `.harness/prompts` | Cycle prompt templates                            |
-| `agentsDir`  | string | `.harness/agents`  | Agent role definition files                       |
-| `agents`     | object | `{}`               | Map of agent name → `{ scope: string[] \| null }` |
+| Field                    | Type   | Default            | Description                                                       |
+| ------------------------ | ------ | ------------------ | ----------------------------------------------------------------- |
+| `harnessDir`             | string | `.harness`         | Root directory for all harness files                              |
+| `promptsDir`             | string | `.harness/prompts` | Cycle prompt templates                                            |
+| `agentsDir`              | string | `.harness/agents`  | Agent role definition files                                       |
+| `agents`                 | object | `{}`               | Map of agent name → `{ scope: string[] \| null }`                |
+| `devServer`              | object | —                  | Dev server services written by `config dev-server detect`         |
+| `authProfiles`           | array  | `[]`               | Named auth profiles captured by `cortex-harness auth`            |
+| `smokeUrls`              | array  | `[]`               | Explicit URLs to probe during smoke cycles (merged with detected) |
+| `smokeCheckBudgetPerUrl` | number | —                  | Max USD spend per URL during a smoke run                          |
+| `mcpScope`               | object | `{}`               | Map of cycle type / agent name → MCP server names for that cycle |
 
 `scope: null` — agent may read/verify everywhere (tester, explorer).  
 `scope: []` — agent is unconstrained; auto-scope update fires after first run.  
@@ -271,7 +343,8 @@ Out-of-scope file writes are automatically reverted by git after each implement 
 | `test`                  | verification | Runs `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 retries                | `test[-<group>].json`        |
 | `fix-*`                 | recovery     | Re-delegates broken surface to owning agent with exact error                                 | injected dynamically         |
 | `recovery`              | recovery     | Reads prompt-orchestration.md after MAX_RETRIES exhausted; applies chaining                  | injected dynamically         |
-| `deliver`               | delivery     | Unified summary, PR description, residual risks                                              | `deliver.json`               |
+| `smoke`                 | verification | Per-URL browser pass via Playwright MCP; on failure injects `fix-*` + smoke-retry up to MAX_RETRIES; exhausted failures → residual risks | `smoke[-<group>].json` |
+| `deliver`               | delivery     | Unified summary, PR description, residual risks; smoke failures are residual risks (never `NEEDS_HUMAN_INPUT`) | `deliver.json` |
 
 ---
 
@@ -287,6 +360,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     create-app.md
     reconcile.md
     prompt-orchestration.md
+    url-detector.md             ← pre-smoke URL extraction (mini-Claude session; falls back to route-scanner)
   agents/
     backend-subagent.agent.md   ← scope sections auto-patched by cortex-harness config
     frontend-subagent.agent.md
@@ -309,6 +383,10 @@ CLAUDE.md                       ← agent routing and protocol (checked in)
 ```
 
 ---
+
+## Contributing
+
+Found a bug or want to add something? See [CONTRIBUTING.md](./CONTRIBUTING.md) to get started.
 
 ## License
 

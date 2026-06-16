@@ -8,6 +8,8 @@ This document covers the internal mechanics of `src/run-autonomous.mjs` and `bin
 
 Cortex runs a deterministic state machine driven by a **task queue**. Every cycle runs inside a subprocess (`claude -p`), emits exactly one signal, and writes a Zod-validated JSON output file. The outer loop reads signals and advances the queue. For multi-intent tasks, the queue is decomposed into ordered groups at plan time and may be extended at runtime by the cross-group reconcile cycle.
 
+![Cortex runtime architecture](./cortex-harness-runtime.svg)
+
 ---
 
 ## Task Queue
@@ -21,14 +23,39 @@ The `orchestrate` cycle writes `.harness/task-queue.json` — a manifest that de
   "task": "add product listing page",
   "promptType": "implement-feature",
   "cycles": [
-    { "id": "explore",            "type": "explore",              "status": "pending", "parallel": false },
-    { "id": "implement-backend",  "type": "implement-backend",    "status": "pending", "parallel": true,
-      "agent": "backend-subagent" },
-    { "id": "implement-frontend", "type": "implement-frontend",   "status": "pending", "parallel": true,
-      "agent": "frontend-subagent" },
-    { "id": "reconcile",          "type": "reconcile",            "status": "pending", "parallel": false },
-    { "id": "test",               "type": "test",                 "status": "pending", "parallel": false },
-    { "id": "deliver",            "type": "deliver",              "status": "pending", "parallel": false }
+    {
+      "id": "explore",
+      "type": "explore",
+      "status": "pending",
+      "parallel": false
+    },
+    {
+      "id": "implement-backend",
+      "type": "implement-backend",
+      "status": "pending",
+      "parallel": true,
+      "agent": "backend-subagent"
+    },
+    {
+      "id": "implement-frontend",
+      "type": "implement-frontend",
+      "status": "pending",
+      "parallel": true,
+      "agent": "frontend-subagent"
+    },
+    {
+      "id": "reconcile",
+      "type": "reconcile",
+      "status": "pending",
+      "parallel": false
+    },
+    { "id": "test", "type": "test", "status": "pending", "parallel": false },
+    {
+      "id": "deliver",
+      "type": "deliver",
+      "status": "pending",
+      "parallel": false
+    }
   ]
 }
 ```
@@ -40,22 +67,99 @@ The `orchestrate` cycle writes `.harness/task-queue.json` — a manifest that de
   "task": "fix broken search, add export CSV",
   "promptType": "multi-intent",
   "intents": [
-    { "subTask": "fix broken search filter", "promptType": "fix-bug",           "group": "fix-search" },
-    { "subTask": "add export to CSV feature", "promptType": "implement-feature", "group": "add-export" }
+    {
+      "subTask": "fix broken search filter",
+      "promptType": "fix-bug",
+      "group": "fix-search"
+    },
+    {
+      "subTask": "add export to CSV feature",
+      "promptType": "implement-feature",
+      "group": "add-export"
+    }
   ],
   "cycles": [
-    { "id": "explore",                          "type": "explore",           "status": "pending", "parallel": false },
-    { "id": "reproduce-fix-search",             "type": "reproduce",         "status": "pending", "taskGroup": "fix-search",  "subTask": "fix broken search filter" },
-    { "id": "implement-backend-fix-search",     "type": "implement-backend", "status": "pending", "taskGroup": "fix-search",  "agent": "backend-subagent",  "parallel": true },
-    { "id": "implement-frontend-fix-search",    "type": "implement-frontend","status": "pending", "taskGroup": "fix-search",  "agent": "frontend-subagent", "parallel": true },
-    { "id": "reconcile-fix-search",             "type": "reconcile",         "status": "pending", "taskGroup": "fix-search"  },
-    { "id": "test-fix-search",                  "type": "test",              "status": "pending", "taskGroup": "fix-search"  },
-    { "id": "implement-backend-add-export",     "type": "implement-backend", "status": "pending", "taskGroup": "add-export", "agent": "backend-subagent",  "parallel": true },
-    { "id": "implement-frontend-add-export",    "type": "implement-frontend","status": "pending", "taskGroup": "add-export", "agent": "frontend-subagent", "parallel": true },
-    { "id": "reconcile-add-export",             "type": "reconcile",         "status": "pending", "taskGroup": "add-export" },
-    { "id": "test-add-export",                  "type": "test",              "status": "pending", "taskGroup": "add-export" },
-    { "id": "reconcile-cross-group",            "type": "reconcile",         "status": "pending", "taskGroup": null          },
-    { "id": "deliver",                          "type": "deliver",           "status": "pending", "parallel": false          }
+    {
+      "id": "explore",
+      "type": "explore",
+      "status": "pending",
+      "parallel": false
+    },
+    {
+      "id": "reproduce-fix-search",
+      "type": "reproduce",
+      "status": "pending",
+      "taskGroup": "fix-search",
+      "subTask": "fix broken search filter"
+    },
+    {
+      "id": "implement-backend-fix-search",
+      "type": "implement-backend",
+      "status": "pending",
+      "taskGroup": "fix-search",
+      "agent": "backend-subagent",
+      "parallel": true
+    },
+    {
+      "id": "implement-frontend-fix-search",
+      "type": "implement-frontend",
+      "status": "pending",
+      "taskGroup": "fix-search",
+      "agent": "frontend-subagent",
+      "parallel": true
+    },
+    {
+      "id": "reconcile-fix-search",
+      "type": "reconcile",
+      "status": "pending",
+      "taskGroup": "fix-search"
+    },
+    {
+      "id": "test-fix-search",
+      "type": "test",
+      "status": "pending",
+      "taskGroup": "fix-search"
+    },
+    {
+      "id": "implement-backend-add-export",
+      "type": "implement-backend",
+      "status": "pending",
+      "taskGroup": "add-export",
+      "agent": "backend-subagent",
+      "parallel": true
+    },
+    {
+      "id": "implement-frontend-add-export",
+      "type": "implement-frontend",
+      "status": "pending",
+      "taskGroup": "add-export",
+      "agent": "frontend-subagent",
+      "parallel": true
+    },
+    {
+      "id": "reconcile-add-export",
+      "type": "reconcile",
+      "status": "pending",
+      "taskGroup": "add-export"
+    },
+    {
+      "id": "test-add-export",
+      "type": "test",
+      "status": "pending",
+      "taskGroup": "add-export"
+    },
+    {
+      "id": "reconcile-cross-group",
+      "type": "reconcile",
+      "status": "pending",
+      "taskGroup": null
+    },
+    {
+      "id": "deliver",
+      "type": "deliver",
+      "status": "pending",
+      "parallel": false
+    }
   ]
 }
 ```
@@ -98,7 +202,7 @@ It also performs **workflow type validation**: it reviews each group's implement
 
 The runner reads this after `reconcile-cross-group` completes and calls `injectAdditionalGroups()`, which:
 
-1. Calls `buildAdditionalGroupCycles()` — constructs a full cycle group (reproduce if fix-bug, explore, implement-*, reconcile, test) for each entry
+1. Calls `buildAdditionalGroupCycles()` — constructs a full cycle group (reproduce if fix-bug, explore, implement-\*, reconcile, test) for each entry
 2. Splices the new cycles into the queue immediately before the `deliver` cycle
 3. Writes the updated queue to disk
 4. Prints the modified pending queue to the terminal
@@ -166,14 +270,16 @@ This lets long test runs slice across multiple 25-turn windows without losing co
 
 ## Safety Mechanisms
 
-| Mechanism          | Default                  | What it does                                                              |
-| ------------------ | ------------------------ | ------------------------------------------------------------------------- |
-| Budget cap         | `MAX_BUDGET_USD = 20`    | Accumulates `total_cost_usd` from every event; stops at `$0.10` remaining |
-| Dead man timer     | `DEAD_MAN_MS = 20 min`   | Force-kills subprocess if no stdout for 20 minutes; marks cycle `hung`    |
-| Result grace kill  | `RESULT_GRACE_MS = 15 s` | After `result` event, force-kills after 15 s (Windows MCP stdout hold)    |
-| Safety turn cap    | `SAFETY_TURN_CAP = 500`  | Hard ceiling on all cycles; prevents infinite loops                       |
-| 0-turn silent fail | —                        | `signal === complete` + 0 turns + no output file → treated as partial     |
-| Rate-limit detect  | —                        | Detects "You've hit your / session limit / weekly limit" → partial        |
+| Mechanism                | Default                  | What it does                                                                                                                                              |
+| ------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Budget cap               | `MAX_BUDGET_USD = 20`    | Accumulates `total_cost_usd` from every event; stops at `$0.10` remaining                                                                                 |
+| Dead man timer           | `DEAD_MAN_MS = 20 min`   | Force-kills subprocess if no stdout for 20 minutes; marks cycle `hung`                                                                                    |
+| Result grace kill        | `RESULT_GRACE_MS = 15 s` | After `result` event, force-kills after 15 s (Windows MCP stdout hold)                                                                                    |
+| Safety turn cap          | `SAFETY_TURN_CAP = 500`  | Hard ceiling on all cycles; prevents infinite loops                                                                                                       |
+| 0-turn silent fail       | —                        | `signal === complete` + 0 turns + no output file → treated as partial                                                                                     |
+| Rate-limit detect        | —                        | Detects "You've hit your / session limit / weekly limit" → partial                                                                                        |
+| Spawn error stop         | —                        | Signal `"error"` (subprocess failed to spawn) → hard stop, no retries; cycle marked blocked with error detail                                             |
+| Session-limit chain stop | —                        | When the `chain` command detects a session-limit block, the chain stops immediately with a clear message; `chain resume` re-enters after the limit resets |
 
 ---
 
@@ -199,10 +305,12 @@ If the cascade cannot fully revert a file, a `scope-cleanup-<cycleId>` reconcile
 The revert cascade above is necessary but blunt — `git restore` / `git clean` wipe a file back to `HEAD`, which would also destroy any uncommitted work the user (or a prior run) had in that file before Cortex started. `src/snapshot.mjs` exists to make reverts non-destructive:
 
 1. **`createPreRunSnapshot()`** — runs once, before any cycle starts. Captures every uncommitted file (`git diff --name-only HEAD` + `git ls-files --others --exclude-standard`) as a byte-perfect `Buffer` blob under `.harness/pre-run-snapshot/`, indexed in `snapshot.json`. The snapshot directory itself is excluded from capture so it never snapshots its own blobs on subsequent runs, and blob filenames are prefixed with `blob-` so they stay visually distinct from real files.
-2. **`refreshSnapshot(cycle)`** — runs after **every** cycle that completes successfully and has an assigned agent (not just `implement-*` cycles — reconcile, fix, and other cycle types can produce valid in-scope edits too). It reads the cycle's report, filters `filesChanged[]` down to paths inside that agent's configured scope, and re-captures just those files. This means the snapshot always reflects the latest *valid* in-scope state, not just the pre-run state.
+2. **`refreshSnapshot(cycle)`** — runs after **every** cycle that completes successfully and has an assigned agent (not just `implement-*` cycles — reconcile, fix, and other cycle types can produce valid in-scope edits too). It reads the cycle's report, filters `filesChanged[]` down to paths inside that agent's configured scope, and re-captures just those files. This means the snapshot always reflects the latest _valid_ in-scope state, not just the pre-run state. **Stale blob pruning:** if a file was dirty in a prior snapshot but is now clean (back to `HEAD`), its blob and index entry are removed — the snapshot directory does not accumulate indefinitely.
 3. **`restoreFromSnapshot(filePath)`** — called by the scope-revert cascade (see above) instead of leaving a file at bare `HEAD`. If a blob exists for the file, its content is written back byte-for-byte; otherwise the cascade's normal git-based revert stands.
 
-Net effect: an out-of-scope write is reverted to the most recent *known-good* content for that file — either the user's pre-run uncommitted work, or the latest valid in-scope edit from an earlier cycle in the same run — rather than to whatever `HEAD` happens to contain.
+Net effect: an out-of-scope write is reverted to the most recent _known-good_ content for that file — either the user's pre-run uncommitted work, or the latest valid in-scope edit from an earlier cycle in the same run — rather than to whatever `HEAD` happens to contain.
+
+**Lock file exclusion:** `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, and similar lock files are skipped during snapshot capture. They change on every install and are not meaningful to snapshot.
 
 ---
 
@@ -212,19 +320,19 @@ When an implement cycle completes with `scope: []` (unconstrained), the harness 
 
 **Path inference** (`inferScopePath`):
 
-| File path | Inferred scope |
-|---|---|
-| `apps/api/src/products/controller.ts` | `apps/api/` |
-| `libs/shared/models/src/product.ts` | `libs/shared/models/` |
+| File path                             | Inferred scope            |
+| ------------------------------------- | ------------------------- |
+| `apps/api/src/products/controller.ts` | `apps/api/`               |
+| `libs/shared/models/src/product.ts`   | `libs/shared/models/`     |
 | `libs/shop/feature-cart/src/index.ts` | `libs/shop/feature-cart/` |
 
 **Shared lib distribution** (`resolveTargetAgents`): paths added to scope are distributed to all agents that need them, not just the creator:
 
-| Path type | Agents receiving the scope |
-|---|---|
-| `apps/<name>/` or `libs/<feature>/` | creating agent only |
-| `libs/shared/` (non-UI) | backend + frontend + distributed |
-| `libs/.../ui` or `libs/.../components` | frontend only |
+| Path type                              | Agents receiving the scope       |
+| -------------------------------------- | -------------------------------- |
+| `apps/<name>/` or `libs/<feature>/`    | creating agent only              |
+| `libs/shared/` (non-UI)                | backend + frontend + distributed |
+| `libs/.../ui` or `libs/.../components` | frontend only                    |
 
 The in-memory `CONFIGURED_AGENTS` map is also updated immediately, so subsequent cycles in the same run benefit from enforcement right away.
 
@@ -234,18 +342,19 @@ The in-memory `CONFIGURED_AGENTS` map is also updated immediately, so subsequent
 
 Every cycle output file is matched against a named Zod schema before its contents are used as context for downstream cycles. The pattern matching is regex-based to handle group-suffixed filenames:
 
-| Pattern | Schema |
-|---|---|
-| `skills.json` | `SkillsReport` |
-| `explore[-<group>].json` | `ExploreReport` |
-| `plan[-<group>].json` | `PlanReport` |
+| Pattern                    | Schema            |
+| -------------------------- | ----------------- |
+| `skills.json`              | `SkillsReport`    |
+| `explore[-<group>].json`   | `ExploreReport`   |
+| `plan[-<group>].json`      | `PlanReport`      |
 | `reproduce[-<group>].json` | `ReproduceReport` |
-| `implement-*.json` | `ImplementReport` |
+| `implement-*.json`         | `ImplementReport` |
 | `reconcile[-<group>].json` | `ReconcileReport` |
-| `test[-<group>].json` | `TestReport` |
-| `fix-*.json` | `FixReport` |
+| `test[-<group>].json`      | `TestReport`      |
+| `fix-*.json`               | `FixReport`       |
+| `smoke[-<group>].json`     | `SmokeReport`     |
 
-On schema mismatch, a warning is printed and conservative defaults (from `CONSERVATIVE_DEFAULTS`) fill in missing critical fields — the run continues rather than aborting.
+On schema mismatch, a warning is printed and conservative defaults (from `CONSERVATIVE_DEFAULTS`) fill in missing critical fields — the run continues rather than aborting. `SmokeReport` conservative default is `{ passed: false, failures: [] }` so a missing or corrupt smoke report is treated as a failing probe (surfaced as residual risk at deliver time, not a hard block).
 
 The `ReconcileReport` schema includes the optional `requiresAdditionalGroups` field (array of `AdditionalGroupEntry`) used by `reconcile-cross-group` to trigger dynamic queue extension.
 
@@ -280,7 +389,9 @@ Agent `.agent.md` files use HTML comment sentinels to mark scope sections:
 ## Scope
 
 Primary ownership:
+
 <!-- cortex:backend -->
+
 - `apps/api/`
 <!-- /cortex:backend -->
 ```
@@ -315,6 +426,8 @@ The function is idempotent — it checks for the `# cortex-harness` block before
 
 ## Fix Injection & Recovery
 
+**On test failure:**
+
 ```
 test fails
   ↓
@@ -329,7 +442,23 @@ inject recovery[-<group>] cycle             (reads prompt-orchestration.md, appl
 deliver                                     (with residual risks noted)
 ```
 
-Fix cycles carry the exact error output from the preceding test run. Each retry targets the agent that owns the broken surface per the routing table. In multi-intent runs, fix and retry cycles carry the group's `taskGroup` and `subTask` fields so context is scoped correctly.
+**On smoke failure** (see [Smoke Fix Injection](#smoke-fix-injection) for surface routing rules):
+
+```
+smoke fails
+  ↓
+inject fix-<surface>-smoke-attempt-1[-<group>]
+inject smoke-retry-1[-<group>]
+  ↓ still failing
+inject fix-<surface>-smoke-attempt-2[-<group>]
+inject smoke-retry-2[-<group>]
+  ↓ MAX_RETRIES exhausted (or skipped / partial / authIssue)
+deliver                                     (failures as residual risks — no recovery cycle)
+```
+
+Smoke exhaustion does **not** inject a `recovery` cycle — smoke failures go directly to `deliver` as residual risks.
+
+Fix cycles carry the exact error output from the preceding test/smoke run. Each retry targets the agent that owns the broken surface per the routing table. In multi-intent runs, fix and retry cycles carry the group's `taskGroup` and `subTask` fields so context is scoped correctly.
 
 ---
 
@@ -342,6 +471,133 @@ Fix cycles carry the exact error output from the preceding test run. Each retry 
 Every subprocess event — text deltas, tool calls, cost data, results — is appended as newline-delimited JSON to `.harness/runs/<timestamp>.jsonl`, providing a full audit trail of every run.
 
 The final deliver summary is also written to `.harness/output/delivery-<timestamp>.md` so it survives the session and can be referenced later.
+
+---
+
+## Dev Server Lifecycle
+
+`src/engine/process-utils.mjs` manages dev server detection and spawning for cycles that need a browser.
+
+**Auto-start logic:** The engine checks whether a cycle's resolved MCP server set includes a browser-driving tool before spawning the cycle. `hasBrowserMcp()` matches server names against a regex (`playwright|puppeteer|selenium|browser-use`). If matched, `startDevServer()` is called automatically — no `needsDevServer` flag required in the queue JSON. The explicit flag still works as a manual override.
+
+**Detection:** `detectDevServerConfig()` scans depth-1 subdirectories (then falls back to the project root for standalone apps) using a structured `DETECTORS` array covering 14 frameworks:
+
+| Framework                                  | Detection strategy                                                |
+| ------------------------------------------ | ----------------------------------------------------------------- |
+| Next.js, Vite, Angular                     | config file presence → dep in `package.json` → npm script content |
+| NestJS, Express                            | dep → script                                                      |
+| Django, FastAPI, Flask, Rails, Spring Boot | language-specific marker files                                    |
+| .NET, Go, Laravel, Rust                    | framework-specific config files                                   |
+
+JS detectors use a **3-pass strategy**: (1) config file, (2) dep in `package.json`, (3) npm script content. Pass 3 catches custom monorepos where deps live in the root `package.json` rather than the project subdir.
+
+**Command resolution** branches across three shapes:
+
+- **Nx** — `npm exec nx run <project>:<target>`
+- **Custom JS monorepo** — `npm --prefix <rel> run <script>`
+- **Standalone** — direct CLI invocation
+
+Non-JS detectors set `needsCwd` so the spawned process runs from its own directory. `spawnService()` accepts a `{ command, cwd? }` object and resolves `cwd` against the workspace root.
+
+**`startDevServer()` lifecycle:** polls a readiness URL, skips startup if the server is already responding, and registers a shutdown handler to kill the process when the cycle closes.
+
+---
+
+## Smoke Subsystem
+
+The smoke cycle provides a deterministic, harness-managed browser pass after test cycles complete, verifying that changed pages are reachable and functional.
+
+### URL Discovery (pre-smoke)
+
+Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smoke step:
+
+1. Spawns a mini-Claude session with `url-detector.md` — the prompt reads the snapshot diff and implement reports to extract changed page URLs.
+2. If the mini-Claude session returns no URLs (or the session fails), falls back to `route-scanner.mjs` — a fully deterministic filesystem scanner with no LLM dependency.
+3. Merges detected URLs with the explicit `smokeUrls[]` list from `harness.config.json`. Duplicates are de-duped.
+
+### Route Scanner (`src/engine/route-scanner.mjs`)
+
+`scanAllRoutes()` detects the frontend framework and scans the filesystem:
+
+| Framework            | Route detection               |
+| -------------------- | ----------------------------- |
+| Next.js App Router   | `app/**/page.{tsx,ts,jsx,js}` |
+| Next.js Pages Router | `pages/**/*.{tsx,ts,jsx,js}`  |
+| Nuxt                 | `pages/**/*.vue`              |
+| SvelteKit            | `src/routes/**/+page.svelte`  |
+| SPA fallback         | index route only              |
+
+`deriveUrlFromPath(filePath, framework)` converts each file path to a browser URL using framework-specific segment rules (dynamic segments, optional catch-all, etc.).
+
+### Smoke Orchestrator (`src/engine/smoke-orchestrator.mjs`)
+
+For each URL, `smoke-orchestrator.mjs` spawns a **separate mini-Claude session** with a Playwright MCP attached. Each session:
+
+1. Navigates to the URL
+2. Runs a network-check pass (looks for 4xx/5xx responses)
+3. Emits one of: `passed`, `failed`, `auth_needed`, `auth_stale`, or `session-limit`
+
+**Auth profiles:** If `harness.config.json` contains `authProfiles`, the orchestrator injects an authenticated `mcp__playwright-<name>__*` MCP server for URLs that require login. The profile is matched by URL pattern or explicitly assigned per-URL. `auth_needed` / `auth_stale` signals cause the orchestrator to stop probing that URL and report it as a failure needing profile attention.
+
+**Budget:** Each URL session is capped at `smokeCheckBudgetPerUrl` USD. The orchestrator tracks cumulative spend and skips remaining URLs if the global run budget is nearly exhausted.
+
+### Auth Command (`cortex-harness auth`)
+
+`src/cli/commands/auth.mjs` captures Playwright storage state for later reuse:
+
+1. Opens a **headed** (visible) browser via Playwright MCP
+2. User logs in manually
+3. On window close, captures `storageState` (cookies + localStorage)
+4. Writes the state under `.harness/auth-profiles/<name>.json` (gitignored)
+5. Registers the profile name in `harness.config.json` under `authProfiles[]`
+
+The `init` wizard prompts for auth profile setup when a dev server is detected during initialization.
+
+### Prompt Builder — Smoke Diagnostics
+
+`buildSmokeDiagnostic(smokeReport)` in `src/engine/prompt-builder.mjs` pre-interprets smoke JSON into structured Markdown before injecting it into fix agent prompts via `{{SMOKE_FAILURE_SUMMARY}}`. This means fix agents receive a human-readable triage summary rather than raw Playwright output:
+
+- `annotateError(error)` — classifies errors (network, auth, render, JS exception) and adds inline triage hints
+- `annotateApiStatus(status)` — translates HTTP status codes into actionable context
+
+### Smoke Fix Injection
+
+When a smoke cycle fails (not skipped, not partial, not an auth issue), the engine injects fix and retry cycles before `deliver` — mirroring the test fix-injection flow:
+
+```
+smoke fails
+  ↓
+inject fix-frontend-smoke-attempt-N[-<group>]   (if page errors detected)
+inject fix-backend-smoke-attempt-N[-<group>]    (if API failures detected)
+inject smoke-retry-N[-<group>]
+  ↓ still failing
+inject fix-...-attempt-2 + smoke-retry-2
+  ↓ MAX_RETRIES exhausted
+deliver                                          (failures surfaced as residual risks)
+```
+
+**Surface routing:** The engine inspects `failures[]` from the `SmokeReport` to determine which fix targets to inject:
+
+- `pageError` present → `frontend-subagent`
+- `apiFailures[]` non-empty → `backend-subagent`
+- Both → two parallel fix cycles
+- Neither (unknown failure type) → `frontend-subagent` as default
+
+Fix cycles carry the first three failure descriptions from `failures[]` in their `notes` field so the owning agent has immediate context without reading the full smoke report.
+
+Smoke retries are counted **per group** (not per cycle ID) to prevent infinite loops when the same smoke cycle ID is injected multiple times.
+
+**Conditions that skip fix injection** (smoke result goes straight to deliver as residual risk):
+
+- `passed: true`
+- `skipped: true` — smoke auto-skipped (no browser MCP, no URLs detected)
+- `partial: true` — smoke session was rate-limited or hit turn cap
+- `authIssue: true` — session is stale; re-run `cortex-harness auth` to refresh
+- `MAX_RETRIES` exhausted
+
+### Deliver behavior
+
+Smoke failures (after all fix retries exhausted) are treated as **residual risks**, never as `NEEDS_HUMAN_INPUT` blockers. The `deliver` cycle always completes with `CYCLE_COMPLETE` — each entry from `failures[]` is formatted as `Smoke failure on <page>: <issue> — requires code fix` in the Residual risks section.
 
 ---
 
