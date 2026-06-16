@@ -34,7 +34,8 @@
     "templates/.claude/",
     "templates/CLAUDE.md",
     "templates/harness.config.json",
-    "ARCHITECTURE.md"
+    "ARCHITECTURE.md",
+    "cortex-harness-runtime.svg"
   ],
   "bin": {
     "cortex-harness": "bin/cli.mjs"
@@ -43,7 +44,8 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "postinstall": "node bin/postinstall.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.5.1",
