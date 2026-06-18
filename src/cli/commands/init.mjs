@@ -155,13 +155,19 @@ export function registerInitCommand(program, ctx) {
           log.message(`${fileIcon(label.icon)} ${chalk.dim(".mcp.json")}${label.note}`);
         }
 
-        // Auto-scope known servers into matching agents' mcpScope
+        // Auto-scope servers into matching agents' mcpScope — known servers are
+        // wired in silently; unknown servers prompt for which agents get them.
         const configPath = path.join(process.cwd(), "harness.config.json");
         if (added.length && (await fs.pathExists(configPath))) {
-          const autoScoped = await autoScopeMcpServers(configPath, added);
-          for (const { server, agents } of autoScoped) {
+          const { scoped, skipped } = await autoScopeMcpServers(configPath, added);
+          for (const { server, agents } of scoped) {
             log.message(
               `${chalk.green("↑")} ${chalk.dim(`mcpScope: ${server} → ${agents.join(", ")}`)}`,
+            );
+          }
+          if (skipped.length) {
+            log.warn(
+              `Skipped mcpScope for: ${skipped.join(", ")} — run "cortex-harness config add-mcp-scope <agent> <server>" to grant access.`,
             );
           }
         }

@@ -21,6 +21,10 @@ function writeMcp(dir, servers) {
   writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: servers }, null, 2));
 }
 
+function writeHarnessConfig(dir, mcpScope) {
+  writeFileSync(join(dir, 'harness.config.json'), JSON.stringify({ mcpScope }, null, 2));
+}
+
 function writeRunLog(dir, filename, rawEvents) {
   const runsDir = join(dir, '.harness', 'runs');
   mkdirSync(runsDir, { recursive: true });
@@ -83,6 +87,42 @@ test('mcp shows multiple registered servers', () => {
   }
 });
 
+test('mcp flags a server with no mcpScope entry — e.g. added by hand outside init', () => {
+  const dir = makeTmpDir();
+  try {
+    writeMcp(dir, {
+      playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+      'my-custom-server': { type: 'stdio', command: 'node', args: ['server.js'] },
+    });
+    writeHarnessConfig(dir, { '*': [], 'frontend-subagent': ['playwright'] });
+
+    const result = spawnSync('node', [CLI, 'mcp'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('my-custom-server');
+    expect(result.stdout).toContain('not scoped to any agent');
+    expect(result.stdout).toContain("won't load for any agent until scoped");
+    expect(result.stdout).toContain('cortex-harness config');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp does not flag a server that is already scoped', () => {
+  const dir = makeTmpDir();
+  try {
+    writeMcp(dir, {
+      playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+    });
+    writeHarnessConfig(dir, { '*': [], 'frontend-subagent': ['playwright'] });
+
+    const result = spawnSync('node', [CLI, 'mcp'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('not scoped to any agent');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── mcp list ──────────────────────────────────────────────────────────────────
 
 test('mcp list shows servers without needing a run log', () => {
@@ -131,14 +171,14 @@ test('mcp usage attributes browser_ tools to playwright server', () => {
       playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
     });
     writeRunLog(dir, '20260101-120000.jsonl', [
-      makeAssistantEvent(['browser_navigate', 'browser_screenshot', 'browser_navigate']),
+      makeAssistantEvent(['mcp__playwright__browser_navigate', 'mcp__playwright__browser_screenshot', 'mcp__playwright__browser_navigate']),
     ]);
 
     const result = spawnSync('node', [CLI, 'mcp', 'usage'], { cwd: dir, encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('playwright');
-    expect(result.stdout).toContain('browser_navigate');
-    expect(result.stdout).toContain('browser_screenshot');
+    expect(result.stdout).toContain('mcp__playwright__browser_navigate');
+    expect(result.stdout).toContain('mcp__playwright__browser_screenshot');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -151,36 +191,56 @@ test('mcp usage splits built-in tools from MCP tools', () => {
       playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
     });
     writeRunLog(dir, '20260101-120000.jsonl', [
-      makeAssistantEvent(['Read', 'Edit', 'Bash', 'browser_navigate']),
+      makeAssistantEvent(['Read', 'Edit', 'Bash', 'mcp__playwright__browser_navigate']),
     ]);
 
     const result = spawnSync('node', [CLI, 'mcp', 'usage'], { cwd: dir, encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('built-in');
     expect(result.stdout).toContain('Read');
-    expect(result.stdout).toContain('browser_navigate');
+    expect(result.stdout).toContain('mcp__playwright__browser_navigate');
     expect(result.stdout).toContain('playwright');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('mcp usage shows unknown MCP bucket for unrecognized non-builtin tools', () => {
+test('mcp usage shows unknown MCP bucket for tool names that are not built-in and not mcp__-prefixed', () => {
   const dir = makeTmpDir();
   try {
     writeMcp(dir, {
       playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
     });
     writeRunLog(dir, '20260101-120000.jsonl', [
-      makeAssistantEvent(['some_custom_mcp_tool', 'another_mcp_tool', 'Read']),
+      makeAssistantEvent(['weird_unprefixed_tool', 'another_weird_tool', 'Read']),
     ]);
 
     const result = spawnSync('node', [CLI, 'mcp', 'usage'], { cwd: dir, encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('unregistered server');
-    expect(result.stdout).toContain('some_custom_mcp_tool');
+    expect(result.stdout).toContain('weird_unprefixed_tool');
     expect(result.stdout).toContain('built-in');
     expect(result.stdout).toContain('Read');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp usage attributes tools from a server not even registered in .mcp.json — no hardcoded list needed', () => {
+  const dir = makeTmpDir();
+  try {
+    writeMcp(dir, {
+      playwright: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+    });
+    writeRunLog(dir, '20260101-120000.jsonl', [
+      makeAssistantEvent(['mcp__custom-server__do_thing', 'Read']),
+    ]);
+
+    const result = spawnSync('node', [CLI, 'mcp', 'usage'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('custom-server');
+    expect(result.stdout).toContain('mcp__custom-server__do_thing');
+    expect(result.stdout).not.toContain('unregistered server');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

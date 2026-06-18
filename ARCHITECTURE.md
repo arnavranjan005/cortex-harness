@@ -474,6 +474,38 @@ The final deliver summary is also written to `.harness/output/delivery-<timestam
 
 ---
 
+## MCP Server Scoping
+
+MCP servers are registered globally in `.mcp.json` but each cycle only ever sees a filtered subset, resolved fresh per cycle rather than fixed for the whole run.
+
+**Registration (`init`):** `mergeMcpConfig()` (`src/cli/helpers/mcp-config.mjs`) merges `templates/.mcp.json` into the project's `.mcp.json` additively — it only adds servers missing from the project file and never overwrites a server the user already defined under that name.
+
+**Scoping (`harness.config.json` → `mcpScope`):** keys are agent names or cycle types (e.g. `"smoke"`), values are arrays of server names from `.mcp.json`. `mcpScope["*"]` is unioned into every key's allowed set. A server with no entry anywhere in `mcpScope` loads for nobody, even though it's registered.
+
+**Auto-scoping newly-registered servers:** after `mergeMcpConfig` reports which servers were just added, `autoScopeMcpServers()` wires each one into `mcpScope`:
+- Servers in the hardcoded `KNOWN_SERVER_SCOPES` map (`playwright`, `shadcn`, `github`, `filesystem`, `fetch`) are scoped to their fixed agent list with no prompt.
+- Any other server has no safe default, so `promptAgentsForServer()` asks interactively which agents (or `"*"`) should get it, via a checklist (`multiselect`) built from `agentScopeOptions()` — never free text. In a non-interactive run (`-y`, CI, piped stdin) the prompt is skipped and the server is reported back as `skipped` so the caller can warn the user to scope it manually.
+- The actual list mutation goes through `applyServerScope()` — a pure function (no fs, no prompts) that adds a server to each target agent additively and reports which agents actually changed, so a re-run against an already-scoped server is a correct no-op rather than a false "success."
+
+The `config` command's interactive "MCP server scope" step reuses the same pure helpers (`serverScopeOptions()`, `scopeListsEqual()`) but drives them through a different interaction shape: pick one agent/key from a menu, edit its server checklist, loop back to the menu — mirroring the "Agent file scopes" flow rather than walking every key in sequence like the `init` auto-scope pass does.
+
+**Per-cycle resolution (`src/engine/cycle-runner.mjs`):** before spawning a cycle's Claude subprocess, `runCycle()` computes:
+
+```js
+const mcpKey = cycle.agent ?? cycle.type ?? null;
+let filteredServers = buildFilteredMcpServers(mcpKey);
+```
+
+`buildFilteredMcpServers()` (`src/engine/process-utils.mjs`) unions `mcpScope["*"]` with `mcpScope[mcpKey]`, looks those names up in `.mcp.json`, and returns the matching server entries — or `null` if `mcpScope` isn't configured at all (meaning no filtering; every registered server loads). The result is written to a throwaway `tmp-mcp-<cycle.id>.json` and the cycle's subprocess is launched with `--mcp-config <that file>` instead of the project's `.mcp.json`, so each cycle is isolated to exactly its own allowed set.
+
+This same resolved set feeds the dev-server auto-start check (see below) — `hasBrowserMcp(filteredServers)` runs against whatever this cycle actually has access to, not the full server list.
+
+**Tool usage attribution (`cortex-harness mcp usage`):** Claude Code names every MCP tool call `mcp__<server>__<tool>`. `attributeTools()` (`src/cli/commands/mcp.mjs`) parses that prefix directly instead of matching against a hardcoded per-server regex, so a server invented after this file was written still attributes correctly with zero code changes. Non-built-in, non-`mcp__`-prefixed tool names fall into an "unregistered server" bucket as a sign something doesn't conform to the convention.
+
+**Surfacing unscoped servers:** the bare `cortex-harness mcp` command cross-references `.mcp.json` against `mcpScope` and flags any server with zero entries anywhere — the case where someone added a server directly to `.mcp.json` by hand (bypassing `mergeMcpConfig`/auto-scope entirely, since that flow only ever sees servers it itself just wrote).
+
+---
+
 ## Dev Server Lifecycle
 
 `src/engine/process-utils.mjs` manages dev server detection and spawning for cycles that need a browser.

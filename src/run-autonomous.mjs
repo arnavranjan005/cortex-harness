@@ -490,7 +490,19 @@ async function main() {
 
   // ── Phase 2: Execute queue ──────────────────────────────────────────────────
 
+  // Seed retryCount from each cycle's existing output-file history so the console
+  // attempt label stays in sync with cycle-state attempts recorded in prior runs
+  // (e.g. after `cortex-harness resume`), instead of restarting from 0 in memory.
   const retryCount = {};
+  for (const c of queue.cycles) {
+    if (!c.outputFile) continue;
+    try {
+      const prior = JSON.parse(readFileSync(join(CYCLE_DIR, c.outputFile), "utf8"));
+      if (Array.isArray(prior.history) && prior.history.length) {
+        retryCount[c.id] = prior.history.length;
+      }
+    } catch { /* no prior output file — start fresh */ }
+  }
 
   while (true) {
     const remaining = MAX_BUDGET_USD - spendRef.value;

@@ -2,6 +2,10 @@
 
 export const SAFETY_TURN_CAP = 500;
 export const MAX_BUDGET_USD = 20;
+
+// Budget for the fallback turn-cap summary call — it embeds the full cut-off
+// cycle's assistant log, so 0.10 was too tight and was failing before producing output.
+export const SUMMARY_BUDGET_USD = 1.0;
 export const DEAD_MAN_MS = 20 * 60 * 1000; // 20 min silence → cycle is hung
 export const MAX_RETRIES = 2;
 export const RESULT_GRACE_MS = 15_000;

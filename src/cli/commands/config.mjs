@@ -1,4 +1,6 @@
 import chalk from "chalk";
+import fs from "fs-extra";
+import path from "path";
 import {
   loadHarnessConfig,
   saveHarnessConfig,
@@ -7,7 +9,8 @@ import {
   printMcpScopeTable,
 } from "../helpers/harness-config.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
-import { select, text, confirm, log } from "../helpers/ui.mjs";
+import { select, text, confirm, log, multiselect } from "../helpers/ui.mjs";
+import { serverScopeOptions, scopeListsEqual } from "../helpers/mcp-config.mjs";
 
 function printDevServerTable(config) {
   const ds = config.devServer;
@@ -90,27 +93,50 @@ export function registerConfigCommand(program) {
     } else if (top === "mcp") {
       if (!config.mcpScope) config.mcpScope = {};
       printMcpScopeTable(config);
-      const scopeKeys = ["*", ...agents];
 
-      for (const key of scopeKeys) {
-        const current = (config.mcpScope[key] ?? []).join(", ");
-        const label = key === "*" ? "* (all agents)" : key;
-        const raw = await text({
-          message: `${label} — server names from .mcp.json`,
-          placeholder: "comma-separated, blank to skip",
-          initialValue: current,
-        });
-        const trimmed = (raw ?? "").trim();
-        if (trimmed && trimmed !== current) {
-          config.mcpScope[key] = trimmed
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          log.success(`Updated ${label}`);
-          dirty = true;
+      // Pick from servers actually registered in .mcp.json — no typing agent
+      // or server names by hand, so nothing here can typo into a no-op.
+      let serverNames = [];
+      try {
+        const mcp = await fs.readJson(path.join(process.cwd(), ".mcp.json"));
+        serverNames = Object.keys(mcp.mcpServers ?? {});
+      } catch { /* no .mcp.json yet */ }
+
+      if (!serverNames.length) {
+        log.warn(
+          "No servers found in .mcp.json — register one first (cortex-harness init, or add it to .mcp.json) before scoping.",
+        );
+      } else {
+        const scopeKeys = ["*", ...agents];
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const key = await select({
+            message: "Which agent's MCP scope do you want to edit?",
+            options: [
+              ...scopeKeys.map((k) => ({ value: k, label: k === "*" ? "* (all agents)" : k })),
+              { value: "__back", label: "← Back" },
+            ],
+            fallback: "__back",
+          });
+          if (key === "__back") break;
+
+          const current = config.mcpScope[key] ?? [];
+          const label = key === "*" ? "* (all agents)" : key;
+          const chosen = await multiselect({
+            message: `${label} — pick MCP servers to allow`,
+            options: serverScopeOptions(serverNames),
+            initialValues: current.filter((s) => serverNames.includes(s)),
+            required: false,
+            fallback: current,
+          });
+          if (!scopeListsEqual(chosen, current)) {
+            config.mcpScope[key] = chosen;
+            log.success(`Updated ${label}`);
+            dirty = true;
+          }
+          printMcpScopeTable(config);
         }
       }
-      printMcpScopeTable(config);
     } else if (top === "devserver") {
       printDevServerTable(config);
       const dsChoice = await select({

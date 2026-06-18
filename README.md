@@ -200,6 +200,32 @@ cortex-harness config dev-server clear
 
 `detect` scans depth-1 subdirectories and the project root for known frameworks (Next.js, Vite, Angular, NestJS, Express, Django, FastAPI, Flask, Rails, Spring Boot, .NET, Go, Laravel, Rust) and writes a `devServer.services[]` block to config. The `init` command runs detection automatically when a dev server is found.
 
+### 2a. Manage MCP server scope
+
+Every cycle only gets the MCP servers listed for its agent (or cycle type) under `mcpScope` in `harness.config.json` — `mcpScope["*"]` applies to every cycle, on top of its own key. A server with no entry anywhere in `mcpScope` never loads for any cycle, even though it's registered in `.mcp.json`.
+
+```bash
+# Inspect what's registered and scoped — flags any server with no mcpScope
+# entry at all (e.g. one you added to .mcp.json by hand)
+cortex-harness mcp
+
+# Print just the mcpScope table
+cortex-harness config mcp-scope
+
+# Interactive wizard — pick an agent (or "*"), then pick servers for it
+# from a checklist (no typing names), loop back to pick another agent
+cortex-harness config
+# → "MCP server scope"
+
+# One-shot scripting equivalents
+cortex-harness config add-mcp-scope frontend-subagent shadcn
+cortex-harness config remove-mcp-scope frontend-subagent shadcn
+```
+
+`init` registers servers from the template's `.mcp.json` additively (never overwrites a server you already defined) and auto-scopes the well-known ones (`playwright`, `shadcn`, `github`, `filesystem`, `fetch`) into the matching agents with no prompt. Any other server it registers triggers the same checklist prompt as the wizard above — "which agents should get this new server?" — since there's no safe default for an unknown tool's access. In non-interactive `init` runs (`-y`, CI) that prompt is skipped and the server is left unscoped; a warning names it so you can run `add-mcp-scope` afterward.
+
+`cortex-harness mcp usage` attributes prior tool calls to the server that made them by parsing the `mcp__<server>__<tool>` prefix Claude Code gives every MCP tool call — this works for any server, including ones added after the fact, with no per-server config needed.
+
 ### 3. Run
 
 ```bash
@@ -321,7 +347,7 @@ Reverts are non-destructive: a pre-run snapshot captures uncommitted work before
 | `authProfiles`           | array  | `[]`               | Named auth profiles captured by `cortex-harness auth`            |
 | `smokeUrls`              | array  | `[]`               | Explicit URLs to probe during smoke cycles (merged with detected) |
 | `smokeCheckBudgetPerUrl` | number | —                  | Max USD spend per URL during a smoke run                          |
-| `mcpScope`               | object | `{}`               | Map of cycle type / agent name → MCP server names for that cycle |
+| `mcpScope`               | object | `{}`               | Map of `"*"` / agent name / cycle type → allowed MCP server names. `"*"` applies to every cycle; a server missing from every key here never loads, even if it's in `.mcp.json`. Managed via `cortex-harness config` / `add-mcp-scope` / `remove-mcp-scope` — see [§2a](#2a-manage-mcp-server-scope) |
 
 `scope: null` — agent may read/verify everywhere (tester, explorer).  
 `scope: []` — agent is unconstrained; auto-scope update fires after first run.  
