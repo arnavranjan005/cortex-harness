@@ -4,16 +4,6 @@ import path from "path";
 import chalk from "chalk";
 import { spawn } from "child_process";
 
-// Tools registered by well-known MCP servers — used to attribute calls to a server.
-// Key = server name in .mcp.json, value = regex that matches its tool names.
-const KNOWN_TOOL_PATTERNS = {
-  playwright: /^browser_/,
-  shadcn: /^shadcn_/,
-  github: /^github_/,
-  filesystem: /^(read_file|write_file|list_directory|create_directory|move_file|search_files|get_file_info)$/,
-  fetch: /^fetch$/,
-};
-
 // Claude Code built-in tools — never come from MCP.
 const BUILTIN_TOOLS = new Set([
   "Bash", "Edit", "Write", "Read", "Grep", "Glob", "Agent",
@@ -60,32 +50,30 @@ function extractToolCalls(runPath) {
   return calls;
 }
 
-function attributeTools(toolCalls, servers) {
+// Claude Code names every MCP tool call "mcp__<server>__<tool>" — that prefix
+// is enough to attribute a call to its server without any per-server pattern,
+// known or not. Server names are looked up case-sensitively against the
+// names actually registered in .mcp.json so attribution still reflects reality
+// (e.g. a server removed from .mcp.json after the run still shows up by name).
+function attributeTools(toolCalls) {
   const attribution = new Map(); // serverName → Map<toolName, count>
   const builtins = new Map();    // known Claude Code internal tools
-  const unknownMcp = new Map();  // not built-in, not matched to a server → likely MCP
+  const unknownMcp = new Map();  // not built-in, no mcp__ prefix → unexpected
 
   for (const [tool, count] of toolCalls) {
-    // 1. Try to match a registered server by its known tool pattern
-    let matched = false;
-    for (const serverName of Object.keys(servers)) {
-      const pattern = KNOWN_TOOL_PATTERNS[serverName];
-      if (pattern && pattern.test(tool)) {
-        if (!attribution.has(serverName)) attribution.set(serverName, new Map());
-        attribution.get(serverName).set(tool, count);
-        matched = true;
-        break;
-      }
-    }
-    if (matched) continue;
-
-    // 2. Known Claude Code built-in?
     if (BUILTIN_TOOLS.has(tool)) {
       builtins.set(tool, count);
       continue;
     }
 
-    // 3. Not built-in, not attributed → likely an MCP tool from an unregistered/unknown server
+    const parts = tool.split("__");
+    if (parts[0] === "mcp" && parts.length >= 3) {
+      const serverName = parts[1];
+      if (!attribution.has(serverName)) attribution.set(serverName, new Map());
+      attribution.get(serverName).set(tool, count);
+      continue;
+    }
+
     unknownMcp.set(tool, count);
   }
   return { attribution, builtins, unknownMcp };
@@ -319,12 +307,34 @@ async function showServers(cwd) {
     return;
   }
 
+  // A server only ends up in mcpScope when it arrived via `init`'s template
+  // merge (or someone ran `config add-mcp-scope` by hand). Servers added
+  // directly to .mcp.json — by editing the file or via another tool — never
+  // pass through that flow, so flag any with no scope entry anywhere instead
+  // of silently letting every cycle skip it.
+  const scopedServers = new Set();
+  try {
+    const configPath = path.join(cwd, "harness.config.json");
+    if (await fs.pathExists(configPath)) {
+      const harnessConfig = await fs.readJson(configPath);
+      for (const list of Object.values(harnessConfig.mcpScope ?? {})) {
+        for (const s of list ?? []) scopedServers.add(s);
+      }
+    }
+  } catch { /* harness.config.json missing or unparsable — skip the scope check */ }
+
+  const unscoped = [];
   for (const name of names) {
     const s = servers[name];
     const cmd = [s.command, ...(s.args ?? [])].join(" ");
-    const known = KNOWN_TOOL_PATTERNS[name] ? chalk.dim(` (tools: ${KNOWN_TOOL_PATTERNS[name].source})`) : "";
-    console.log(`  ${chalk.green("●")} ${chalk.bold(name)}${known}`);
+    const isUnscoped = scopedServers.size > 0 && !scopedServers.has(name);
+    if (isUnscoped) unscoped.push(name);
+    console.log(`  ${chalk.green("●")} ${chalk.bold(name)}${isUnscoped ? chalk.yellow("  (not scoped to any agent)") : ""}`);
     console.log(`    ${chalk.dim("type:")} ${s.type ?? "stdio"}  ${chalk.dim("cmd:")} ${chalk.cyan(cmd)}`);
+  }
+  if (unscoped.length) {
+    console.log(chalk.yellow(`\n  ${unscoped.join(", ")} won't load for any agent until scoped.`));
+    console.log(chalk.dim(`  Run "cortex-harness config" → MCP server scope, or "cortex-harness config add-mcp-scope <agent> <server>".`));
   }
   console.log(chalk.dim(`\n  Run "cortex-harness mcp check" to verify servers are reachable.`));
   console.log();
@@ -444,7 +454,7 @@ async function showUsage(cwd, runArg) {
     servers = mcp.mcpServers ?? {};
   } catch { /* no .mcp.json — show everything as unattributed */ }
 
-  const { attribution, builtins, unknownMcp } = attributeTools(toolCalls, servers);
+  const { attribution, builtins, unknownMcp } = attributeTools(toolCalls);
 
   // 1. Attributed MCP calls per registered server
   for (const [serverName, tools] of attribution) {

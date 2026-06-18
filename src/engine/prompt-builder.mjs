@@ -337,7 +337,14 @@ Current cycle: ${cycle.id}`;
         : null);
     const agentRole = agentName ? readAgentMd(agentName) : "";
 
-    const testReportRaw = readCycleState("test.json");
+    // Mirror the smoke-suffix pattern below: outputFile names are "test-<group>.json",
+    // so a bare "test.json" lookup misses every task-grouped queue (the common case).
+    // A test cycle re-reading its own prior attempt should use its exact outputFile;
+    // any other cycle type (e.g. fix) wants the related test cycle's file, derived from taskGroup.
+    const testSuffix = cycle.taskGroup ? `-${cycle.taskGroup}` : "";
+    const testReportFile =
+      cycle.type === "test" ? (cycle.outputFile ?? `test${testSuffix}.json`) : `test${testSuffix}.json`;
+    const testReportRaw = readCycleState(testReportFile);
     const testFailureDetails = testReportRaw
       ? `\n## Test failure details\n\`\`\`json\n${testReportRaw}\n\`\`\``
       : "";

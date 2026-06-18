@@ -1,4 +1,4 @@
-import chalk from "chalk";
+﻿import chalk from "chalk";
 import { spawn, execSync } from "child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
@@ -9,6 +9,7 @@ import {
   MAX_RETRIES,
   TEST_MAX_RETRIES_CLEAN,
   SMOKE_MAX_RETRIES_CLEAN,
+  SUMMARY_BUDGET_USD,
   getTurnCap,
 } from "./constants.mjs";
 import { pollReadiness, detectDevServerConfig, startDevServer } from "./process-utils.mjs";
@@ -28,6 +29,15 @@ function resolveClaudeExe() {
   }
 }
 const CLAUDE_EXE = resolveClaudeExe();
+
+// Render a tool_use input as a short human-readable hint (file path, command, etc.)
+// for the turn-cap fallback summary — never the full payload.
+function describeToolInput(input) {
+  if (!input || typeof input !== "object") return "";
+  const candidate = input.file_path ?? input.path ?? input.command ?? input.pattern ?? input.query;
+  if (typeof candidate === "string") return candidate.slice(0, 80);
+  return "";
+}
 
 // Determine the effective retry ceiling for a cycle attempt.
 // Test cycles use a generous cap when the failure is a clean turn-cap partial;
@@ -105,15 +115,22 @@ export function createCycleRunner({
     const prompt = `You are summarizing progress from a test cycle that was cut off by a turn limit.
 
 Cycle: ${cycleId}
-Last ${Array.isArray(assistantLog) ? assistantLog.length : 0} assistant messages before cut-off:
+Last ${Array.isArray(assistantLog) ? assistantLog.length : 0} log entries before cut-off:
+
+Entries come in three forms:
+- Plain prose: the assistant's own narration.
+- "[tool call] ToolName(target)": the assistant actually invoked that tool on that target
+  (e.g. edited a file, ran a command) — this is a real action, not just a stated intent.
+- "[tool result] ToolName(target) -> ok|error": the outcome of that tool call. "error" means
+  that specific action failed (e.g. a test run failed, an edit was rejected); "ok" means it succeeded.
 
 ${messages}
 
 In 2-3 sentences, summarize:
-1. What was completed (spec files written, tests passing)
-2. What still remains (specs not yet written, test failures not fixed)
+1. What was completed (spec files written, tests passing) — treat "ok" tool results as confirmed completions
+2. What still remains (specs not yet written, test failures not fixed) — call out any "error" results specifically
 
-Be specific — list file names if mentioned. Do not guess. Only use what is in the messages above.
+Be specific — list file names if mentioned. Do not guess. Only use what is in the entries above.
 Reply with only the summary, no preamble.`;
 
     return new Promise((resolve) => {
@@ -130,7 +147,7 @@ Reply with only the summary, no preamble.`;
         writeFileSync(summaryPromptFile, prompt, "utf8");
         writeFileSync(
           summaryPsFile,
-          `Get-Content -Path "${summaryPromptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --output-format text --max-turns 3 --max-budget-usd 0.10 --dangerously-skip-permissions\n`,
+          `Get-Content -Path "${summaryPromptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --output-format text --max-turns 3 --max-budget-usd ${SUMMARY_BUDGET_USD} --dangerously-skip-permissions\n`,
           "utf8",
         );
         proc = spawn(
@@ -142,7 +159,7 @@ Reply with only the summary, no preamble.`;
         proc = spawn(
           "claude",
           ["-p", prompt, "--output-format", "text", "--max-turns", "3",
-            "--max-budget-usd", "0.10", "--dangerously-skip-permissions"],
+            "--max-budget-usd", String(SUMMARY_BUDGET_USD), "--dangerously-skip-permissions"],
           { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
         );
       }
@@ -184,6 +201,7 @@ Reply with only the summary, no preamble.`;
       let finalMessage = "";
       let rawText = "";
       const assistantLog = [];
+      const pendingToolCalls = new Map(); // tool_use id -> { name, desc }, until its tool_result arrives
       let deadManTimer = null;
       let settled = false;
       let rateLimitResetsAt = null;
@@ -349,21 +367,46 @@ Reply with only the summary, no preamble.`;
               if (turnCount % 10 === 0) process.stdout.write(` ${turnCount}\n`);
               const content = event.message?.content ?? [];
               const textBlock = content.find((c) => c.type === "text");
+              const toolCalls = content.filter((c) => c.type === "tool_use");
               if (textBlock?.text?.trim()) {
                 assistantLog.push(textBlock.text.trim());
-                if (assistantLog.length > 10) assistantLog.shift();
+              } else if (toolCalls.length) {
+                // No prose this turn — record the tool calls so the fallback
+                // summary still has something concrete (tool-only turns are common).
+                const desc = toolCalls
+                  .map((t) => `${t.name}(${describeToolInput(t.input)})`)
+                  .join(", ");
+                assistantLog.push(`[tool call] ${desc}`);
               }
+              // Track every tool call (even ones alongside prose) so its result can be
+              // matched up below and the summary can see success/failure, not just intent.
+              for (const t of toolCalls) {
+                pendingToolCalls.set(t.id, { name: t.name, desc: describeToolInput(t.input) });
+              }
+              if (assistantLog.length > 10) assistantLog.shift();
             }
 
             if (event.type === "user") {
-              const hasToolResult =
-                Array.isArray(event.message?.content) &&
-                event.message.content.some((c) => c.type === "tool_result");
+              const resultBlocks = Array.isArray(event.message?.content)
+                ? event.message.content.filter((c) => c.type === "tool_result")
+                : [];
+              for (const r of resultBlocks) {
+                const call = pendingToolCalls.get(r.tool_use_id);
+                if (!call) continue;
+                pendingToolCalls.delete(r.tool_use_id);
+                const outcome = r.is_error ? "error" : "ok";
+                assistantLog.push(`[tool result] ${call.name}(${call.desc}) -> ${outcome}`);
+                if (assistantLog.length > 10) assistantLog.shift();
+              }
+              const hasToolResult = resultBlocks.length > 0;
               if (hasToolResult) {
                 liveTurnCount++;
                 process.stdout.write(` [T${liveTurnCount}]`);
                 const cap = getTurnCap(cycle);
-                if (liveTurnCount >= cap) {
+                // killProc() doesn't kill the child instantly (esp. on Windows), so buffered
+                // stdout can still deliver another tool_result after the cap is hit — guard
+                // against re-entering this block and double-running the summary/file-write.
+                if (liveTurnCount >= cap && !turnCapKilled) {
                   (async () => {
                     appendLog({
                       type: "harness",
@@ -376,10 +419,11 @@ Reply with only the summary, no preamble.`;
                       `\n  ${chalk.yellow("[TURN CAP]")} ${chalk.cyan(cycle.id)} hit ${cap}-turn limit — stopping`,
                     );
 
+                    turnCapKilled = true;
+                    killProc(proc);
+
                     if (cycle.outputFile) {
                       console.log(`  ${chalk.dim("[SUMMARY]")} Requesting progress summary...`);
-                      turnCapKilled = true;
-                      killProc(proc);
                       const summary = await requestTurnCapSummary(cycle.id, assistantLog);
                       console.log(
                         `  ${chalk.dim("[SUMMARY]")} ${summary.slice(0, 120)}${summary.length > 120 ? "…" : ""}`,

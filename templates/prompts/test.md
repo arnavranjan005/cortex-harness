@@ -60,6 +60,12 @@ Skip for single-surface changes with no shared contract edits.
 - Never retry a passing result
 - If a command times out, try once with `--forceExit --testTimeout=30000` then report as-is
 - e2e targets are out of scope unless the task explicitly touched UI-visible behavior
+- If {{OUTPUT_FILE}} already exists (e.g. a prior partial attempt left a turn-cap stub with
+  `passed: false` / `history` fields), Read it, then replace its ENTIRE content with the
+  final report below via Write — do not Edit just the opening fields. If Write rejects the
+  call because the file wasn't read in this turn, Read it first and then Write the full
+  replacement; never patch only a few keys and leave old fields (`history`, `note`, etc.)
+  in place. The final file must contain only the fields in the shape below — nothing else.
 - When the task touches BOTH a frontend entry point and its backing API route, run an
   e2e smoke pass using the browser automation MCP server (identified in the MCP Tools
   step above). Use MCP tool calls to: navigate to the affected page(s), assert no
