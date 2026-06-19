@@ -9,17 +9,8 @@
 import chalk from "chalk";
 import { appendFileSync, mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "fs";
 import { join, relative } from "path";
-import { execSync as _execSync, spawn as _spawn } from "child_process";
-
-// Resolve claude executable (same logic as cycle-runner.mjs) for pre-smoke mini runs
-const CLAUDE_EXE = (() => {
-  if (process.platform !== "win32") return "claude";
-  try {
-    const lines = _execSync("where.exe claude", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    return lines.find(l => l.toLowerCase().endsWith(".cmd")) ?? lines[0] ?? "claude";
-  } catch { return "claude"; }
-})();
+import { spawn as _spawn } from "child_process";
+import { CLAUDE_EXE } from "./engine/claude-exe.mjs";
 import {
   validateCycleOutput,
   validateTaskQueue,

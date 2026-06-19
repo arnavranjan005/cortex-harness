@@ -640,3 +640,20 @@ On Windows, Cortex avoids shell quote-handling issues with long prompts by:
 1. Writing the full cycle prompt to a UTF-8 `.txt` temp file in `.harness/runs/`
 2. Generating a `.ps1` wrapper script that reads and passes the file
 3. Spawning `powershell.exe` to execute the wrapper
+
+### Resolving the `claude` executable (`src/engine/claude-exe.mjs`)
+
+The `.ps1` wrapper is invoked with `-NoProfile`, so it never loads the user's PowerShell profile — which is normally where `%APPDATA%\npm` gets added to `PATH`. Without that, a bare `claude` call inside the wrapper fails with `CommandNotFoundException` even though `claude` works fine in an ordinary terminal.
+
+To avoid this, `resolveClaudeExe()` runs once per process (Windows only — non-Windows hosts skip straight to returning the bare `"claude"`, since POSIX `spawn()` calls don't go through an intermediate profile-stripping shell and inherit the parent's `PATH` directly):
+
+1. Runs `where.exe claude` to find every match on `PATH`.
+2. Prefers the line ending in `.cmd` (the npm shim) over other matches, since that's what resolves reliably when re-invoked from PowerShell.
+3. If `where.exe` throws or returns nothing, retries up to **3 attempts total**, ~200ms apart — `where.exe` does a live filesystem/PATH search and can fail transiently (antivirus scanning the npm folder, a cold filesystem cache, etc.), so a single flake shouldn't be treated as "claude is unavailable."
+4. If all 3 attempts fail, logs a `[WARN]` to the console and falls back to the bare `"claude"` string — which then depends on `-NoProfile` PowerShell's own PATH search succeeding at cycle-spawn time, with no further retry. This fallback path is a known weak spot: a sustained PATH/AV issue at harness startup will silently degrade every cycle in that run.
+
+The resolved value is cached as the exported `CLAUDE_EXE` constant and reused for every `.ps1` script generated for the lifetime of that process — it is **not** re-resolved per cycle, and **not** persisted to disk; it lives only in that process's memory, and a fresh `cortex-harness run`/`resume` re-resolves from scratch.
+
+`src/engine/cycle-runner.mjs`, `src/run-autonomous.mjs`, and `src/cli/helpers/chain-task.mjs` all import `CLAUDE_EXE` from this single module rather than each resolving it independently — this used to be three separate copies of the same logic before being consolidated.
+
+Covered by `tests/engine/claude-exe.test.mjs` (non-Windows fast path, `.cmd` preference, retry-then-success, exhausted-retries-and-warn).

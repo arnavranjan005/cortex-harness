@@ -1,5 +1,5 @@
 ﻿import chalk from "chalk";
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import {
@@ -13,22 +13,7 @@ import {
   getTurnCap,
 } from "./constants.mjs";
 import { pollReadiness, detectDevServerConfig, startDevServer } from "./process-utils.mjs";
-
-// On Windows, PowerShell spawned with -NoProfile does not load the user profile
-// that adds %APPDATA%\npm to PATH, so `claude` (a .cmd shim) is not found.
-// Resolve to the full path once at module load so every .ps1 script uses it.
-function resolveClaudeExe() {
-  if (!isWindows) return "claude";
-  try {
-    const lines = execSync("where.exe claude", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    // Prefer .cmd shim — it works reliably when called from PowerShell
-    return lines.find((l) => l.toLowerCase().endsWith(".cmd")) ?? lines[0] ?? "claude";
-  } catch {
-    return "claude";
-  }
-}
-const CLAUDE_EXE = resolveClaudeExe();
+import { CLAUDE_EXE } from "./claude-exe.mjs";
 
 // Render a tool_use input as a short human-readable hint (file path, command, etc.)
 // for the turn-cap fallback summary — never the full payload.
@@ -135,6 +120,7 @@ Reply with only the summary, no preamble.`;
 
     return new Promise((resolve) => {
       let output = "";
+      let errOutput = "";
       let proc;
       const timeout = setTimeout(() => {
         try { killProc(proc); } catch { /* already gone */ }
@@ -165,8 +151,18 @@ Reply with only the summary, no preamble.`;
       }
 
       proc.stdout.on("data", (chunk) => { output += chunk.toString("utf8"); });
-      proc.on("close", () => { clearTimeout(timeout); resolve(output.trim() || "(no summary returned)"); });
-      proc.on("error", () => { clearTimeout(timeout); resolve("(summary spawn failed)"); });
+      proc.stderr.on("data", (chunk) => { errOutput += chunk.toString("utf8"); });
+      proc.on("close", (code) => {
+        clearTimeout(timeout);
+        if (output.trim()) {
+          resolve(output.trim());
+        } else if (errOutput.trim()) {
+          resolve(`(no summary returned — exit ${code}: ${errOutput.trim().slice(0, 200)})`);
+        } else {
+          resolve(`(no summary returned — exit ${code}, no output)`);
+        }
+      });
+      proc.on("error", (err) => { clearTimeout(timeout); resolve(`(summary spawn failed: ${err.message})`); });
     });
   }
 
