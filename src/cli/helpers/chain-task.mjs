@@ -1,19 +1,8 @@
 import fs from "fs-extra";
 import path from "path";
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import chalk from "chalk";
-
-function resolveClaudeExe() {
-  if (process.platform !== "win32") return "claude";
-  try {
-    const lines = execSync("where.exe claude", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    return lines.find((l) => l.toLowerCase().endsWith(".cmd")) ?? lines[0] ?? "claude";
-  } catch {
-    return "claude";
-  }
-}
-const CLAUDE_EXE = resolveClaudeExe();
+import { CLAUDE_EXE } from "../../engine/claude-exe.mjs";
 
 // Passes the full delivery markdown to the LLM. Returns the next task string
 // if chaining is needed, or null if the delivery is clean / all risks are
