@@ -240,6 +240,83 @@ Current cycle: ${cycle.id}`;
     );
   }
 
+  // Full chronological smoke/fix history — every smoke-attempt-N.json snapshot
+  // interleaved with every fix-*-smoke-attempt-*.json report, oldest first.
+  // Fed to fix cycles so a retried fix doesn't re-investigate (or contradict)
+  // what an earlier fix attempt already concluded for the same failure.
+  function assembleSmokeFixHistory(cycle) {
+    const g = cycle.taskGroup;
+    const smokeSuffix = g ? `-${g}` : "";
+
+    let smokeAttempts = [];
+    try {
+      smokeAttempts = readdirSync(CYCLE_DIR)
+        .filter((f) => new RegExp(`^smoke-attempt-\\d+${smokeSuffix}\\.json$`).test(f))
+        .map((f) => {
+          const m = f.match(/smoke-attempt-(\d+)/);
+          const raw = readCycleState(f);
+          if (!m || !raw) return null;
+          try { return { _attempt: parseInt(m[1]), _file: f, ...JSON.parse(raw) }; }
+          catch { return null; }
+        })
+        .filter(Boolean)
+        .sort((a, b) => a._attempt - b._attempt);
+    } catch { /* none yet */ }
+
+    let fixReports = [];
+    try {
+      fixReports = readdirSync(CYCLE_DIR)
+        .filter((f) => /^fix-.*-smoke-attempt-.*\.json$/.test(f))
+        .sort()
+        .map((f) => {
+          const raw = readCycleState(f);
+          if (!raw) return null;
+          try { return { _file: f, ...JSON.parse(raw) }; }
+          catch { return null; }
+        })
+        .filter(Boolean);
+    } catch { /* none yet */ }
+
+    if (!smokeAttempts.length && !fixReports.length) return "";
+
+    const maxAttempt = smokeAttempts.length ? Math.max(...smokeAttempts.map((s) => s._attempt)) : 0;
+    const historyLines = [];
+    for (let n = 1; n <= maxAttempt; n++) {
+      const sa = smokeAttempts.find((s) => s._attempt === n);
+      if (sa) {
+        const { _attempt, _file, ...saData } = sa;
+        historyLines.push(`### Smoke Attempt ${n} (${_file}):\n\`\`\`json\n${JSON.stringify(saData, null, 2)}\n\`\`\``);
+      }
+      const fixesForAttempt = fixReports.filter((f) => {
+        const m = (f._file ?? "").match(/-smoke-attempt-(\d+)/);
+        return m && parseInt(m[1]) === n;
+      });
+      for (const fix of fixesForAttempt) {
+        const { _file, ...fixData } = fix;
+        historyLines.push(`### Fix After Smoke Attempt ${n} (${_file}):\n\`\`\`json\n${JSON.stringify(fixData, null, 2)}\n\`\`\``);
+      }
+    }
+    // Defensive: any fix report whose filename didn't match a known attempt number
+    const unmatched = fixReports.filter((f) => {
+      const m = (f._file ?? "").match(/-smoke-attempt-(\d+)/);
+      const n = m ? parseInt(m[1]) : null;
+      return n === null || n < 1 || n > maxAttempt;
+    });
+    for (const fix of unmatched) {
+      const { _file, ...fixData } = fix;
+      historyLines.push(`### Fix (${_file}):\n\`\`\`json\n${JSON.stringify(fixData, null, 2)}\n\`\`\``);
+    }
+
+    return (
+      `\n\n## Full smoke/fix history (chronological, oldest first)\n` +
+      `Every smoke attempt and every fix report from every prior cycle, in order. ` +
+      `Before re-diagnosing a failure, check whether a prior fix report's rootCause or ` +
+      `outOfScopeIssues already covers it — do not redo an investigation already concluded, ` +
+      `and do not contradict a prior conclusion without new evidence.\n\n` +
+      historyLines.join("\n\n")
+    );
+  }
+
   function assemblePriorContext(cycle) {
     const parts = [];
     const g = cycle.taskGroup;
@@ -266,6 +343,11 @@ Current cycle: ${cycle.id}`;
       );
     if (explore) parts.push(`## Explorer report\n\`\`\`json\n${explore}\n\`\`\``);
     if (plan) parts.push(`## Planner report\n\`\`\`json\n${plan}\n\`\`\``);
+
+    if (cycle.type === "fix") {
+      const smokeFixHistory = assembleSmokeFixHistory(cycle);
+      if (smokeFixHistory) parts.push(smokeFixHistory.trim());
+    }
 
     const queue = readQueue();
     if (queue) {

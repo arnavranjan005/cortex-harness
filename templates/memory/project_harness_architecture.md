@@ -22,7 +22,7 @@ The autonomous harness (`run-autonomous.mjs`) runs each cycle as a fresh, bounde
 | reconcile | `reconcile` | Contract check + gap resolution + consistency |
 | reconcile-cross-group | `reconcile` | Multi-intent only — checks contracts across all groups; may emit `requiresAdditionalGroups` to inject new cycle groups |
 | test | `test` | `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 clean retries |
-| smoke | `smoke` | One global browser pass after reconcile-cross-group — Node.js orchestrator (`createSmokeOrchestrator`) runs per-URL mini-Claude sessions with Playwright MCP; emitted once per run only if any group has an implement-frontend cycle. A pre-smoke step runs `url-detector.md` LLM prompt to extract changed page URLs, falls back to `route-scanner.mjs` filesystem scan; merges with `smokeUrls[]` from config. Auth profiles injected at runtime from `authProfiles[]` in `harness.config.json`. |
+| smoke | `smoke` | One global browser pass after reconcile-cross-group — Node.js orchestrator (`createSmokeOrchestrator`) runs per-URL mini-Claude sessions with Playwright MCP; emitted once per run only if any group has an implement-frontend cycle. A pre-smoke step runs `url-detector.md` LLM prompt to extract changed page URLs, falls back to `route-scanner.mjs` filesystem scan; merges with `smokeUrls[]` from config. Auth profiles injected at runtime from `authProfiles[]` in `harness.config.json`. Each session classifies its own failures into `failedSurfaces` (frontend/backend/infra); pages with a `[param]` segment get a relaxed not-found check (real value from `routeParams` if configured, else a generic placeholder). |
 | fix-* | `fix` | Injected dynamically on test failure, up to MAX_RETRIES=2 |
 | recovery | `recovery` | Injected after MAX_RETRIES exhausted — reads orchestration.md, re-chains |
 | deliver | `deliver` | Reads all cycle-state/ files, produces unified summary |
@@ -72,10 +72,11 @@ Agent `.agent.md` files use `<!-- cortex:surface -->` sentinels around scope sec
 ## Config CLI
 
 `cortex-harness config` replaces manual `harness.config.json` editing:
-- `config list` — print scope table
-- `config` — interactive wizard
-- `config add-scope <agent> <path>` — add a scope path
-- `config remove-scope <agent> <path>` — remove a scope path
+- `config list` / `config` (interactive wizard) — agent file scopes
+- `config add-scope <agent> <path>` / `config remove-scope <agent> <path>`
+- `config mcp-scope` / `config add-mcp-scope <agent|*> <server>` / `config remove-mcp-scope <agent|*> <server>` — which MCP servers each agent or cycle type can use
+- `config dev-server` / `config dev-server detect` / `config dev-server clear` — devServer block
+- `config route-params` / `config set-route-param <name> <value>` / `config set-route-override <routePattern> <name> <value>` / `config remove-route-param <key>` — `routeParams` (see Auth profiles for smoke cycles, above)
 
 Every mutation updates both `harness.config.json` and agent `.agent.md` scope sections.
 
@@ -118,6 +119,8 @@ The queue is a living file. The runner injects cycles at runtime:
 |---|---|---|
 | test fails, retries remain | `fix-<surface>-attempt-N[-group]` + `test-retry-N[-group]` | deliver |
 | test fails, retries exhausted | `recovery[-group]` | deliver |
+| smoke fails, retries remain | `fix-<surface>-smoke-attempt-N[-group]` (one per surface in `failedSurfaces`) + `smoke-retry-N[-group]` | deliver |
+| smoke fails, retries exhausted | none — smoke failures become residual risks, never `recovery` | deliver |
 | scope violation can't auto-revert | `scope-cleanup-<cycleId>` | next implement or reconcile |
 | reconcile-cross-group finds wrong workflow | additional group cycles per `requiresAdditionalGroups[]` | deliver |
 
@@ -142,7 +145,12 @@ All injected cycles inherit `taskGroup` and `subTask` from the triggering cycle 
 - `authProfiles: [{ name, storageFile }]` — named browser sessions; injected as `mcp__playwright-<name>__*` MCP servers at smoke runtime
 - `smokeUrls: []` — additional URLs always included in probe-urls.json regardless of what changed
 - `smokeCheckBudgetPerUrl: 0.80` — per-URL Claude budget in USD
+- `routeParams: {}` — concrete values for `[param]`/`[...param]` segments during route scanning, instead of the generic `"1"`/`"test"` placeholder. Two shapes, checked in order: route-specific override (keyed by bracket pattern, e.g. `"/clients/[id]": { "id": "demo-1" }`) wins over a flat default (keyed by param name only, e.g. `"id": "1"`). Manage via `cortex-harness config route-params` / `set-route-param` / `set-route-override` / `remove-route-param`, or the interactive wizard's "Dynamic route params" entry (auto-detects real dynamic routes in the project via `scanDynamicRoutes()` instead of requiring hand-typed bracket paths).
 
 Run `cortex-harness auth [--profile <name>]` to capture a browser session. The `init` wizard prompts for this when a dev server is detected. Auth state is never committed — `.gitignore` is patched automatically.
+
+## Smoke retry history
+
+On a `smoke-retry-N` cycle, every prior `smoke-attempt-*.json` snapshot and every `fix-*-smoke-attempt-*.json` report is read from `cycle-state/` and interleaved chronologically into each URL's check prompt, so a retry doesn't re-diagnose or contradict a conclusion an earlier fix already reached for that same failure. The retry's probe list is also narrowed to only the URLs that failed in the most recent snapshot.
 
 [[feedback-claude-md-compliance]]

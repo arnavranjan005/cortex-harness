@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { detectFramework, deriveFrontendRoot, deriveUrlFromPath, scanAllRoutes } from "../../src/engine/route-scanner.mjs";
+import { detectFramework, deriveFrontendRoot, deriveUrlFromPath, scanAllRoutes, scanDynamicRoutes, extractParamNames } from "../../src/engine/route-scanner.mjs";
 
 function makeRoot(structure) {
   const root = join(tmpdir(), `route-scanner-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -202,16 +202,16 @@ describe("scanAllRoutes", () => {
       "web/src/app/(dashboard)/layout.tsx": "",
       "web/src/app/page.tsx": "",
     });
-    const routes = scanAllRoutes(root, "web/", "nextjs-app-router");
-    expect(routes).toContain("/reports");
-    expect(routes).toContain("/invoices");
-    expect(routes).toContain("/");
-    expect(routes).not.toContain("/layout");
+    const { urls } = scanAllRoutes(root, "web/", "nextjs-app-router");
+    expect(urls).toContain("/reports");
+    expect(urls).toContain("/invoices");
+    expect(urls).toContain("/");
+    expect(urls).not.toContain("/layout");
   });
 
-  test("returns empty array for unknown framework", () => {
+  test("returns empty arrays for unknown framework", () => {
     const root = makeRoot({});
-    expect(scanAllRoutes(root, "web/", "unknown")).toEqual([]);
+    expect(scanAllRoutes(root, "web/", "unknown")).toEqual({ urls: [], dynamicUrls: [] });
   });
 
   test("returns sorted deduplicated routes", () => {
@@ -219,8 +219,78 @@ describe("scanAllRoutes", () => {
       "web/src/app/(dashboard)/b/page.tsx": "",
       "web/src/app/(dashboard)/a/page.tsx": "",
     });
-    const routes = scanAllRoutes(root, "web/", "nextjs-app-router");
-    expect(routes).toEqual([...routes].sort());
-    expect(new Set(routes).size).toBe(routes.length);
+    const { urls } = scanAllRoutes(root, "web/", "nextjs-app-router");
+    expect(urls).toEqual([...urls].sort());
+    expect(new Set(urls).size).toBe(urls.length);
+  });
+
+  test("per-route override wins over flat name default when both configured", () => {
+    const root = makeRoot({
+      "web/src/app/(dashboard)/clients/[id]/page.tsx": "",
+      "web/src/app/(dashboard)/invoices/[id]/page.tsx": "",
+    });
+    const routeParams = {
+      id: "1",                                  // flat default — would collide across both routes
+      "/clients/[id]": { id: "demo-client-1" }, // override wins for this route only
+    };
+    const { urls } = scanAllRoutes(root, "web/", "nextjs-app-router", routeParams);
+    expect(urls).toContain("/clients/demo-client-1");
+    expect(urls).toContain("/invoices/1"); // falls back to flat default, no override configured
+  });
+
+  test("flags dynamic-segment routes and substitutes routeParams by name", () => {
+    const root = makeRoot({
+      "web/src/app/(dashboard)/clients/[id]/page.tsx": "",
+      "web/src/app/(dashboard)/docs/[...slug]/page.tsx": "",
+      "web/src/app/(dashboard)/reports/page.tsx": "",
+    });
+    const { urls, dynamicUrls } = scanAllRoutes(root, "web/", "nextjs-app-router", { id: "42" });
+    expect(urls).toContain("/clients/42");
+    expect(urls).toContain("/docs/test");
+    expect(dynamicUrls).toEqual(["/clients/42", "/docs/test"]);
+    expect(dynamicUrls).not.toContain("/reports");
+  });
+});
+
+describe("extractParamNames", () => {
+  test("extracts a single named segment", () => {
+    expect(extractParamNames("clients/[id]")).toEqual(["id"]);
+  });
+
+  test("extracts a catch-all segment by its inner name, without the leading dots", () => {
+    expect(extractParamNames("docs/[...slug]")).toEqual(["slug"]);
+  });
+
+  test("extracts multiple named segments in order", () => {
+    expect(extractParamNames("orgs/[orgId]/projects/[projectId]")).toEqual(["orgId", "projectId"]);
+  });
+
+  test("returns an empty array for a static route", () => {
+    expect(extractParamNames("reports")).toEqual([]);
+  });
+});
+
+describe("scanDynamicRoutes", () => {
+  test("returns one entry per distinct dynamic route pattern with its param names and a live example URL", () => {
+    const root = makeRoot({
+      "web/src/app/(dashboard)/clients/[id]/page.tsx": "",
+      "web/src/app/(dashboard)/docs/[...slug]/page.tsx": "",
+      "web/src/app/(dashboard)/reports/page.tsx": "",
+    });
+    const routes = scanDynamicRoutes(root, "web/", "nextjs-app-router");
+    expect(routes).toEqual([
+      { routePattern: "/clients/[id]", paramNames: ["id"], exampleUrl: "/clients/1" },
+      { routePattern: "/docs/[...slug]", paramNames: ["slug"], exampleUrl: "/docs/test" },
+    ]);
+  });
+
+  test("returns an empty array when no dynamic routes exist", () => {
+    const root = makeRoot({ "web/src/app/reports/page.tsx": "" });
+    expect(scanDynamicRoutes(root, "web/", "nextjs-app-router")).toEqual([]);
+  });
+
+  test("returns an empty array for an unknown framework", () => {
+    const root = makeRoot({});
+    expect(scanDynamicRoutes(root, "web/", "unknown")).toEqual([]);
   });
 });

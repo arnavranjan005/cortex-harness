@@ -549,7 +549,7 @@ Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smo
 
 ### Route Scanner (`src/engine/route-scanner.mjs`)
 
-`scanAllRoutes()` detects the frontend framework and scans the filesystem:
+`scanAllRoutes(root, frontendRoot, framework, routeParams)` detects the frontend framework and scans the filesystem:
 
 | Framework            | Route detection               |
 | -------------------- | ----------------------------- |
@@ -559,7 +559,14 @@ Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smo
 | SvelteKit            | `src/routes/**/+page.svelte`  |
 | SPA fallback         | index route only              |
 
-`deriveUrlFromPath(filePath, framework)` converts each file path to a browser URL using framework-specific segment rules (dynamic segments, optional catch-all, etc.).
+It returns `{ urls, dynamicUrls }` — `dynamicUrls` is the subset of `urls` derived from substituting a `[param]`/`[...param]` segment, real or placeholder.
+
+`deriveUrlFromPath(filePath, frontendRoot, framework, routeParams)` converts each file path to a browser URL using framework-specific segment rules (dynamic segments, optional catch-all, etc.). `routeParams` (from `harness.config.json`) resolves dynamic segments to concrete values instead of generic placeholders (`"1"` / `"test"`), checked in order:
+
+1. **Route-specific override** — keyed by the route's bracket pattern (e.g. `"/clients/[id]"` → `{ "id": "demo-client-1" }`). Wins when present.
+2. **Flat default** — keyed by param name only (e.g. `"id": "1"`), applied to every route using that name.
+
+If neither is configured, falls back to the generic placeholder.
 
 ### Smoke Orchestrator (`src/engine/smoke-orchestrator.mjs`)
 
@@ -572,6 +579,12 @@ For each URL, `smoke-orchestrator.mjs` spawns a **separate mini-Claude session**
 **Auth profiles:** If `harness.config.json` contains `authProfiles`, the orchestrator injects an authenticated `mcp__playwright-<name>__*` MCP server for URLs that require login. The profile is matched by URL pattern or explicitly assigned per-URL. `auth_needed` / `auth_stale` signals cause the orchestrator to stop probing that URL and report it as a failure needing profile attention.
 
 **Budget:** Each URL session is capped at `smokeCheckBudgetPerUrl` USD. The orchestrator tracks cumulative spend and skips remaining URLs if the global run budget is nearly exhausted.
+
+**Dynamic routes:** URLs in `dynamicUrls` (see Route Scanner above) get a relaxed render/network check — a "not found" state (404 text, but normal app chrome, no crash/error overlay) is recorded as `renderSummary.notFoundState: true` and passes, since the placeholder ID may not correspond to a real record. A genuine crash (500, error overlay, blank page) still fails regardless. The same exception applies to a 4xx on the page's own primary record fetch in the network check; any other endpoint failing is still a real issue.
+
+**Failure classification:** Each session classifies its own `issues[]` into `failedSurfaces` (`"frontend"`, `"backend"`, `"infra"`) before returning, since it has context (status codes, console text, CORS detection) a later heuristic can't recover. `mergeResults()` falls back to `inferFallbackSurfaces()` only when a session omits `failedSurfaces` (e.g. malformed/stale report).
+
+**Retry history:** On a `smoke-retry-N` cycle, every prior `smoke-attempt-*.json` snapshot and every `fix-*-smoke-attempt-*.json` report is read from `cycle-state/` and interleaved chronologically into each URL's check prompt (oldest first), so a retry doesn't re-diagnose or contradict a conclusion an earlier fix already reached. The retry's probe list is also narrowed to only the URLs that failed in the most recent snapshot. Each completed smoke run (including retries) writes its own numbered `smoke-attempt-N[-<group>].json` snapshot to `cycle-state/` for this purpose.
 
 ### Auth Command (`cortex-harness auth`)
 
@@ -608,12 +621,7 @@ inject fix-...-attempt-2 + smoke-retry-2
 deliver                                          (failures surfaced as residual risks)
 ```
 
-**Surface routing:** The engine inspects `failures[]` from the `SmokeReport` to determine which fix targets to inject:
-
-- `pageError` present → `frontend-subagent`
-- `apiFailures[]` non-empty → `backend-subagent`
-- Both → two parallel fix cycles
-- Neither (unknown failure type) → `frontend-subagent` as default
+**Surface routing:** The engine reads `failedSurfaces` from the `SmokeReport` (deduped union of each failing URL's own `failedSurfaces`, as classified by the smoke-check session — see Smoke Orchestrator above) to determine which fix targets to inject: one fix cycle per surface present (`"frontend"`, `"backend"`, `"infra"`). If a report predates this field (no `failedSurfaces`), the engine falls back to the old heuristic: `pageError` present → frontend, `apiFailures[]` non-empty → backend, neither → frontend as default.
 
 Fix cycles carry the first three failure descriptions from `failures[]` in their `notes` field so the owning agent has immediate context without reading the full smoke report.
 

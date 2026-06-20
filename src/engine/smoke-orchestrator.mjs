@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync } from "fs";
 import { join } from "path";
 import { spawn } from "child_process";
 import chalk from "chalk";
@@ -11,7 +11,7 @@ export function profileStorageFile(name) {
   return `.harness/smoke-auth-${name}.json`;
 }
 
-export function buildUrlCheckPrompt(url, devServerUrl, profileMcpNames) {
+export function buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext = null, isDynamic = false) {
   const hasProfiles = profileMcpNames.length > 0;
   const profileSessionLines = hasProfiles
     ? profileMcpNames.map(n => `  mcp__playwright-${n}__* → ${n} profile`).join("\n")
@@ -80,13 +80,32 @@ Wait up to 8 seconds for the page to finish loading before any checks:
 
 ━━━ STEP 3 — Render check (browser_snapshot) ━━━━━━━━━━━━━━━━━━━━━
 Take a full accessibility tree snapshot. Analyze its content:
+${isDynamic ? `
+  THIS URL HAS A DYNAMIC SEGMENT (e.g. "[id]") FILLED WITH A PLACEHOLDER VALUE —
+  it may not correspond to a real record in this environment's data. A "not found"
+  state here can be EITHER (a) the app correctly handling a missing record, which
+  is a PASS, or (b) a real crash, which is still a FAIL. Distinguish them:
 
+  Still a hard failure — set pageRenderOk: false, record text in pageError, add to issues[]:
+  - Visible text contains: "500", "Internal Server Error", "Something went wrong",
+    "ChunkLoadError", "Unexpected token", "Application error", a raw stack trace,
+    or any framework crash/error overlay (Next.js error overlay, unhandled exception)
+  - An error boundary is rendered (role=alert with error/exception content)
+  - Body content is completely blank (no meaningful nodes beyond html/body/head)
+
+  NOT a failure — a deliberately designed "not found" state for this record:
+  - Visible text contains "404" / "Not Found" / "No results" / "doesn't exist" etc.,
+    BUT the page still renders normal app chrome (nav/header/layout present, no
+    stack trace, no error overlay) — i.e. the app's own not-found UI rendered cleanly.
+  - Record this in renderSummary.notFoundState: true and set pageRenderOk: true.
+    Do NOT add it to issues[]. This confirms the route's not-found handling works.
+` : `
   Hard failures — set pageRenderOk: false, record text in pageError, add to issues[]:
   - Visible text contains any of: "404", "Not Found", "500", "Internal Server Error",
     "Something went wrong", "ChunkLoadError", "Unexpected token", "Application error"
   - An error boundary is rendered (role=alert with error content, or Next.js error overlay)
   - Body content is completely blank (no meaningful nodes beyond html/body/head)
-
+`}
   Structural checks — record in renderSummary, do NOT add to issues[]:
   - Count headings: document.querySelectorAll('h1,h2,h3').length → renderSummary.headingCount
   - Navigation present: any element with role="navigation" → renderSummary.navPresent (bool)
@@ -141,6 +160,15 @@ Capture ALL network requests made since page load. For each record:
   - ECONNREFUSED → record status as "connection-error" (backend not running in dev)
   - ERR_CONNECTION_RESET with no CORS console message → record status as "connection-error" (browser closed while SSE/websocket open)
   - 3xx redirects (normal)
+${isDynamic ? `  - A 4xx (typically 404) on the request that fetches THIS page's own placeholder
+    record (e.g. GET /invoices/1 when the URL is /invoices/1) — same reasoning as
+    STEP 3: the ID is a placeholder, not guaranteed to exist. Still record it in
+    apiCalls[] with its real status, just don't add it to issues[].
+    This exception applies ONLY to the page's own primary record fetch — a 4xx/5xx
+    on any OTHER endpoint (e.g. a sibling list, a different resource, an unrelated
+    API) is still a real issue and must be added to issues[] as usual.
+    Apply consistently: this exact rule applies to every dynamic-route page, not
+    just some of them — do not flag one placeholder-ID 404 while waving off another.` : ""}
 
   Record total count: apiCallCount = total number of requests captured
 
@@ -161,12 +189,34 @@ Capture ALL console output. Categorize each message:
     [HMR], [Fast Refresh], third-party script errors (URLs containing node_modules or CDN domains),
     "Download the React DevTools", favicon 404s
 
-━━━ STEP 7 — Screenshot on failure (browser_take_screenshot) ━━━━━
+━━━ STEP 7 — Classify failing surface(s) (failedSurfaces) ━━━━━━━━
+Only if issues[] is non-empty. For EACH issue, decide which agent owns the fix —
+you have full context (status codes, console text, CORS detection) that a later
+heuristic over this JSON would not have, so classify now, not after the fact:
+
+  "frontend" — render/hydration errors, console JS errors (TypeError, ReferenceError,
+    hydration mismatch), broken images, missing/empty headings, stuck spinner,
+    service worker registration errors, Next.js/Nuxt error overlays.
+
+  "backend" — API 4xx/5xx from your own app's routes (not third-party), DB/auth
+    logic errors surfaced through an API response.
+
+  "infra" — CORS errors ("CORS error on <METHOD> <path>"), status 0 with no CORS
+    message but also no normal explanation, connection-refused that persists across
+    retries (not just a dev server that hasn't started yet), env/config-looking
+    failures (missing API base URL, wrong port).
+
+  One issue can map to more than one surface only if it genuinely spans both —
+  default to the single most accurate owner. Put every surface that owns at least
+  one issue on this page into failedSurfaces (dedup, lowercase, e.g. ["frontend"]
+  or ["backend","infra"]). Leave failedSurfaces: [] if issues[] is empty.
+
+━━━ STEP 8 — Screenshot on failure (browser_take_screenshot) ━━━━━
 Only if issues[] is non-empty after all steps above:
   Take a screenshot. Record the file path returned by the tool in screenshotPath.
   If no issues, set screenshotPath: null.
 
-━━━ STEP 8 — Close browser (browser_close) ━━━━━━━━━━━━━━━━━━━━━━━
+━━━ STEP 9 — Close browser (browser_close) ━━━━━━━━━━━━━━━━━━━━━━━
 Always call browser_close now. This releases open connections (SSE, websockets)
 and lets the MCP process clean up before you return. Do not skip this step.
 
@@ -182,7 +232,8 @@ Return ONLY this JSON — no markdown, no explanation, nothing else:
     "headingCount": 3,
     "navPresent": true,
     "mainPresent": true,
-    "stuckSpinner": false
+    "stuckSpinner": false,
+    "notFoundState": false
   },
   "apiCalls": [{"url": "/api/example", "method": "GET", "status": 200}],
   "apiCallCount": 3,
@@ -202,12 +253,106 @@ Return ONLY this JSON — no markdown, no explanation, nothing else:
     "appErrorCount": null
   },
   "issues": [],
+  "failedSurfaces": [],
   "screenshotPath": null,
   "staleProfiles": []
 }
 
 status = "fail" if pageRenderOk is false OR issues[] is non-empty.
-status = "pass" if all checks passed with no issues.`.trim();
+status = "pass" if all checks passed with no issues.`;
+
+  // Prepend prior-run context block for retry smoke cycles.
+  // Full chronological history is sent raw (smoke attempt N → fix N → smoke attempt N+1 …).
+  // No programmatic filtering — the agent extracts what applies to THIS url.
+  if (priorContext) {
+    const { smokeAttempts = [], fixReports = [] } = priorContext;
+
+    // Build interleaved history: for each smoke attempt, follow with the fix reports
+    // that share the same attempt number, then move to the next smoke attempt.
+    const maxAttempt = smokeAttempts.length;
+    const historyLines = [];
+    for (let n = 1; n <= maxAttempt; n++) {
+      const sa = smokeAttempts.find(s => s._attempt === n);
+      if (sa) {
+        const { _attempt, _file, ...saData } = sa;
+        historyLines.push(`### Smoke Attempt ${n} (${_file}):\n\`\`\`json\n${JSON.stringify(saData, null, 2)}\n\`\`\``);
+      }
+      // Fix reports whose filename contains -smoke-attempt-N
+      const fixes = fixReports.filter(f => {
+        const m = (f._file ?? "").match(/-smoke-attempt-(\d+)/);
+        return m && parseInt(m[1]) === n;
+      });
+      for (const fix of fixes) {
+        const { _file, ...fixData } = fix;
+        historyLines.push(`### Fix After Smoke Attempt ${n} (${_file}):\n\`\`\`json\n${JSON.stringify(fixData, null, 2)}\n\`\`\``);
+      }
+    }
+
+    const priorBlock = `
+━━━ FULL PRIOR HISTORY (THIS IS A RETRY SMOKE CHECK) ━━━━━━━━━━━━
+
+YOU ARE RETRYING A SMOKE CHECK. Below is the complete chronological history
+of every smoke attempt and every fix cycle run before this retry.
+
+YOUR TASK FOR THIS INVOCATION:
+  Check URL: ${url}
+  1. Read the full history below from top to bottom to understand what has
+     been tried. Find all entries relevant to "${url}".
+  2. For each fix cycle: check fixed[] — those issues should now be resolved.
+     Verify against what you actually observe on the page now, not just the report's word.
+  3. For any outOfScopeIssues in any fix report — "out of scope" means a DIFFERENT
+     agent owns the fix, NOT that the issue is resolved or not real:
+       a) Check every LATER fix report's fixed[] (later = higher attempt number, or
+          same attempt number but a different surface's report that appears AFTER
+          the outOfScopeIssues entry in the chronological history below).
+       b) If a later fixed[] entry clearly addresses that exact issue → treat it as
+          resolved. Verify it yourself against the live page; only then omit it from
+          issues[] and do not fail the page for it.
+       c) If NO later fix report's fixed[] addresses it → it is still an unresolved
+          real defect, just owned by someone else. Add it to issues[] and FAIL the
+          page for it like any other issue. Do not mark "pass" just because some
+          fix report once called it out-of-scope.
+  4. All URLs other than ${url} are shown only as context. You are
+     responsible for ${url} ONLY.
+
+## Chronological History (oldest first):
+
+${historyLines.join("\n\n")}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`;
+    return (priorBlock + body).trim();
+  }
+
+  return body;
+}
+
+/**
+ * Code-side safety net for failedSurfaces — runs only when the LLM left it empty.
+ * The LLM classifies first because it has full context (status codes, console text,
+ * CORS detection) that this heuristic can't see; this just guarantees a failure is
+ * never silently unclassified ("unknown") if the agent forgot or returned malformed JSON.
+ *
+ * Uses overall `status` rather than `pageRenderOk` — pageRenderOk only reflects the
+ * STEP 3 hard-crash/blank-page check, so a page can fail (status: "fail") from
+ * broken images, a stuck spinner, or a console TypeError (STEP 4/6) while
+ * pageRenderOk stays true. Gating on pageRenderOk alone would miss those as frontend.
+ */
+function inferFallbackSurfaces({ status, apiFailures, issues }) {
+  const surfaces = new Set();
+  const allIssues = issues ?? [];
+  const corsIssues = allIssues.filter(i => /^CORS error/.test(i));
+  if (apiFailures.length) surfaces.add("backend");
+  if (corsIssues.length) surfaces.add("infra");
+
+  // Any issue not already explained by an API failure or CORS is a frontend symptom
+  // (render text, broken images, stuck spinner, console errors) — and if nothing
+  // explains the failure at all (e.g. a blank-page crash with no issues[] text),
+  // frontend is still the right default home for a render-level failure.
+  const explained = apiFailures.length + corsIssues.length;
+  if (status === "fail" && (allIssues.length > explained || surfaces.size === 0)) {
+    surfaces.add("frontend");
+  }
+  return [...surfaces];
 }
 
 export function mergeResults(urlResults) {
@@ -229,20 +374,31 @@ export function mergeResults(urlResults) {
 
   const failures = urlResults
     .filter(r => r.status === "fail")
-    .map(r => ({
-      url: r.url,
-      pageError: r.pageError ?? null,
-      renderSummary: r.renderSummary ?? null,
-      apiFailures: (r.apiCalls ?? []).filter(a => typeof a.status === "number" && a.status >= 400),
-      consoleErrors: r.consoleErrors ?? [],
-      screenshotPath: r.screenshotPath ?? null,
-      issues: r.issues ?? [],
-    }));
+    .map(r => {
+      const apiFailures = (r.apiCalls ?? []).filter(a => typeof a.status === "number" && a.status >= 400);
+      const issues = r.issues ?? [];
+      const llmSurfaces = r.failedSurfaces ?? [];
+      const failedSurfaces = llmSurfaces.length
+        ? llmSurfaces
+        : inferFallbackSurfaces({ status: r.status, apiFailures, issues });
+      return {
+        url: r.url,
+        pageError: r.pageError ?? null,
+        renderSummary: r.renderSummary ?? null,
+        apiFailures,
+        consoleErrors: r.consoleErrors ?? [],
+        screenshotPath: r.screenshotPath ?? null,
+        issues,
+        failedSurfaces,
+      };
+    });
 
   const runtimeChecks = {};
   for (const r of urlResults) {
     if (r.runtimeChecks) runtimeChecks[r.url] = r.runtimeChecks;
   }
+
+  const failedSurfaces = [...new Set(failures.flatMap(f => f.failedSurfaces ?? []))];
 
   return {
     passed: failures.length === 0,
@@ -259,6 +415,7 @@ export function mergeResults(urlResults) {
     consoleErrors: urlResults.flatMap(r => r.consoleErrors ?? []),
     consoleWarnings: urlResults.flatMap(r => r.consoleWarnings ?? []),
     failures,
+    failedSurfaces,
     ...(Object.keys(runtimeChecks).length ? { runtimeChecks } : {}),
   };
 }
@@ -362,11 +519,11 @@ export function createSmokeOrchestrator({
     });
   }
 
-  async function checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames) {
+  async function checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames, priorContext = null, isDynamic = false) {
     const tmpMcp = join(HARNESS_DIR, `tmp-mcp-smoke-${Date.now()}.json`);
     writeFileSync(tmpMcp, JSON.stringify({ mcpServers }, null, 2), "utf8");
 
-    const prompt = buildUrlCheckPrompt(url, devServerUrl, profileMcpNames);
+    const prompt = buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext, isDynamic);
     const raw = await spawnMiniClaude(prompt, tmpMcp);
     try { unlinkSync(tmpMcp); } catch {}
 
@@ -402,8 +559,9 @@ export function createSmokeOrchestrator({
     }
   }
 
-  async function runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl) {
-    const { urls = [], layoutAffected = false } = JSON.parse(probeUrlsJson);
+  async function runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl, priorSmokeContext = null) {
+    const { urls = [], layoutAffected = false, dynamicUrls = [] } = JSON.parse(probeUrlsJson);
+    const dynamicUrlSet = new Set(dynamicUrls);
 
     if (!urls.length && !layoutAffected) {
       const output = { passed: true, skipped: true, reason: "no page files changed",
@@ -418,11 +576,12 @@ export function createSmokeOrchestrator({
       .filter(k => k.startsWith("playwright-"))
       .map(k => k.replace("playwright-", ""));
 
-    appendLog({ type: "smoke-orchestrator", event: "start", urls, profileMcpNames });
+    appendLog({ type: "smoke-orchestrator", event: "start", urls, profileMcpNames,
+      isRetry: !!priorSmokeContext });
 
     const urlResults = [];
     for (const url of urls) {
-      const result = await checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames);
+      const result = await checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames, priorSmokeContext, dynamicUrlSet.has(url));
       appendLog({ type: "smoke-orchestrator", event: "url-result", url, status: result.status });
       urlResults.push(result);
       const issueCount = result.issues?.length ?? 0;
@@ -443,6 +602,19 @@ export function createSmokeOrchestrator({
 
     const output = mergeResults(urlResults);
     writeFileSync(join(CYCLE_DIR, cycle.outputFile), JSON.stringify(output, null, 2), "utf8");
+
+    // Save a numbered per-attempt snapshot so retry cycles have full history.
+    // smoke-attempt-1.json = first run, smoke-attempt-2.json = first retry, etc.
+    try {
+      const sg = cycle.taskGroup;
+      const smokeSuffix = sg ? `-${sg}` : "";
+      const existing = readdirSync(CYCLE_DIR)
+        .filter(f => new RegExp(`^smoke-attempt-\\d+${smokeSuffix}\.json$`).test(f)).length;
+      const attemptN = existing + 1;
+      const snapshotFile = `smoke-attempt-${attemptN}${smokeSuffix}.json`;
+      writeFileSync(join(CYCLE_DIR, snapshotFile), JSON.stringify(output, null, 2), "utf8");
+      appendLog({ type: "smoke-orchestrator", event: "attempt-snapshot", file: snapshotFile, attempt: attemptN });
+    } catch { /* best-effort — snapshot failure must not break the run */ }
 
     if (output.authIssue) {
       const authResult = urlResults.find(r => r.status === "auth_needed" || r.status === "auth_stale");
