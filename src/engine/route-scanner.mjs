@@ -175,6 +175,27 @@ export function deriveRouteInfo(filePath, frontendRoot, framework, routeParams =
 }
 
 /**
+ * Build a placeholder→resolved URL map for changed page files that have a
+ * configured routeParams override. The LLM url-detector always substitutes the
+ * generic "1"/"test" placeholder itself (it has no knowledge of routeParams), so
+ * any dynamic URL it reports matching a placeholder here should be swapped for
+ * the resolved value — via the same deriveRouteInfo used by scanAllRoutes, so
+ * there is one source of truth for what a routeParams override resolves to.
+ */
+export function buildDynamicUrlOverrides(changedFiles, frontendRoot, framework, routeParams = {}) {
+  const overrides = new Map();
+  for (const file of changedFiles) {
+    const resolved = deriveRouteInfo(file, frontendRoot, framework, routeParams);
+    if (!resolved || resolved.paramNames.length === 0) continue;
+    const placeholder = deriveRouteInfo(file, frontendRoot, framework, {});
+    if (placeholder && placeholder.url !== resolved.url) {
+      overrides.set(placeholder.url, resolved.url);
+    }
+  }
+  return overrides;
+}
+
+/**
  * Convert a single file path (relative to repo root) to a navigable URL.
  * Returns null if the file is not a page file for the given framework.
  * Thin wrapper over `deriveRouteInfo()` for callers that only need the URL.

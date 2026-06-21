@@ -228,7 +228,7 @@ cortex-harness config remove-mcp-scope frontend-subagent shadcn
 
 ### 2b. Manage dynamic route params
 
-Pages with a `[param]`/`[...param]` segment (e.g. `app/clients/[id]/page.tsx`) get a generic placeholder (`"1"` / `"test"`) substituted in during smoke URL scanning unless you configure a real value via `routeParams` in `harness.config.json`. Two shapes are supported, checked in order:
+Pages with a `[param]`/`[...param]` segment (e.g. `app/clients/[id]/page.tsx`) get a generic placeholder (`"1"` / `"test"`) substituted in during smoke URL scanning unless you configure a real value via `routeParams` in `harness.config.json`. This applies whether the URL was found by the deterministic filesystem scanner or by the pre-smoke LLM URL detector — the LLM only ever flags a URL as dynamic, the engine mechanically resolves `routeParams` against it afterward, so the substitution logic only lives in one place. Two shapes are supported, checked in order:
 
 - **Route-specific override** — keyed by the bracket route pattern, value is `{ paramName: value }`. Wins when present.
 - **Flat default** — keyed by param name only, applies to every route using that name.
@@ -411,7 +411,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     create-app.md
     reconcile.md
     prompt-orchestration.md
-    url-detector.md             ← pre-smoke URL extraction (mini-Claude session; falls back to route-scanner)
+    url-detector.md             ← pre-smoke URL extraction (mini-Claude session, print-only/no Write; falls back to route-scanner)
   agents/
     backend-subagent.agent.md   ← scope sections auto-patched by cortex-harness config
     frontend-subagent.agent.md
@@ -422,7 +422,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     planner-subagent.agent.md
   cycle-state/                  ← written at runtime (gitignored)
     skills.json                 ← skill output forwarded to implement cycles
-    probe-urls.json             ← pre-smoke URL detection result (urls, dynamicUrls, framework)
+    probe-urls.json             ← pre-smoke URL detection result (urls, dynamicUrls, layoutAffected, framework — dynamicUrls always routeParams-resolved by the engine)
     changed-files.json          ← snapshot diff used by implement/reconcile
     scope-violations.json       ← auto-revert tracking
     smoke-attempt-N[-<group>].json  ← per-attempt smoke snapshot, used to build retry history

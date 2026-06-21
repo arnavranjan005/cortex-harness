@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { detectFramework, deriveFrontendRoot, deriveUrlFromPath, scanAllRoutes, scanDynamicRoutes, extractParamNames } from "../../src/engine/route-scanner.mjs";
+import { detectFramework, deriveFrontendRoot, deriveUrlFromPath, scanAllRoutes, scanDynamicRoutes, extractParamNames, buildDynamicUrlOverrides } from "../../src/engine/route-scanner.mjs";
 
 function makeRoot(structure) {
   const root = join(tmpdir(), `route-scanner-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -292,5 +292,38 @@ describe("scanDynamicRoutes", () => {
   test("returns an empty array for an unknown framework", () => {
     const root = makeRoot({});
     expect(scanDynamicRoutes(root, "web/", "unknown")).toEqual([]);
+  });
+});
+
+// ── buildDynamicUrlOverrides ────────────────────────────────────────────────────
+
+describe("buildDynamicUrlOverrides", () => {
+  test("maps the LLM's generic placeholder to the routeParams-resolved URL", () => {
+    const changedFiles = ["web/src/app/(dashboard)/clients/[id]/page.tsx"];
+    const routeParams = { id: "demo-client-1" };
+    const overrides = buildDynamicUrlOverrides(changedFiles, "web/", "nextjs-app-router", routeParams);
+    expect(overrides.get("/clients/1")).toBe("/clients/demo-client-1");
+  });
+
+  test("prefers a route-specific override over the flat default", () => {
+    const changedFiles = ["web/src/app/(dashboard)/clients/[id]/page.tsx"];
+    const routeParams = { id: "flat-default", "/clients/[id]": { id: "specific-client" } };
+    const overrides = buildDynamicUrlOverrides(changedFiles, "web/", "nextjs-app-router", routeParams);
+    expect(overrides.get("/clients/1")).toBe("/clients/specific-client");
+  });
+
+  test("returns no mapping when no routeParams are configured", () => {
+    const changedFiles = ["web/src/app/(dashboard)/clients/[id]/page.tsx"];
+    const overrides = buildDynamicUrlOverrides(changedFiles, "web/", "nextjs-app-router", {});
+    expect(overrides.size).toBe(0);
+  });
+
+  test("ignores static page files and non-page files", () => {
+    const changedFiles = [
+      "web/src/app/(dashboard)/reports/page.tsx",
+      "web/src/components/nav-bar.tsx",
+    ];
+    const overrides = buildDynamicUrlOverrides(changedFiles, "web/", "nextjs-app-router", { id: "demo-client-1" });
+    expect(overrides.size).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-You are a URL extractor. Read the files below and write JSON output only. No explanation, no markdown, just the JSON written to the output file.
+You are a URL extractor. Read the files below and print JSON output only — no explanation, no markdown, no file writes. Print the JSON as your entire response.
 
 The changed files for this run are provided inline — do NOT read changed-files.json from disk:
 
@@ -32,23 +32,28 @@ Strip FRONTEND_ROOT from each path before applying these rules.
 **Next.js app router:**
 - `src/app/(any-route-group)/X/page.tsx` → `/X`
 - `src/app/X/page.tsx` (no route group) → `/X`
-- `src/app/(any-route-group)/X/[param]/page.tsx` → `/X/1`
-- `src/app/(any-route-group)/X/[...slug]/page.tsx` → `/X/test`
-- Any `layout.tsx` changed → set `layoutAffected: true`
+- `src/app/(any-route-group)/X/[param]/page.tsx` → `/X/1`, mark **isDynamic: true**
+- `src/app/(any-route-group)/X/[...slug]/page.tsx` → `/X/test`, mark **isDynamic: true**
+- Any `layout.tsx` changed (any path, any nesting) → set `layoutAffected: true`
 
 **Next.js pages router:**
 - `src/pages/X.tsx` → `/X`
 - `src/pages/X/index.tsx` → `/X`
+- `src/pages/[param].tsx` or `src/pages/X/[param].tsx` → mark **isDynamic: true**
 - `src/pages/_app.tsx` or `src/pages/_document.tsx` → set `layoutAffected: true`
 
 **Nuxt:**
 - `pages/X.vue` → `/X`
 - `pages/index.vue` → `/`
-- `layouts/default.vue` or `layouts/app.vue` → set `layoutAffected: true`
+- `pages/[param].vue` → mark **isDynamic: true**
+- Any file under `layouts/` changed (any filename, not just `default.vue`/`app.vue`) → set `layoutAffected: true`
 
 **SvelteKit:**
 - `src/routes/X/+page.svelte` → `/X`
-- `src/routes/+layout.svelte` → set `layoutAffected: true`
+- `src/routes/X/[param]/+page.svelte` → mark **isDynamic: true**
+- Any `+layout.svelte` changed (any path, any nesting — not just the root) → set `layoutAffected: true`
+
+For every URL, set `isDynamic: false` unless one of the dynamic-segment rules above applies. Always substitute the generic placeholder (`1` for `[param]`, `test` for `[...slug]`) yourself — you have no knowledge of project-specific route param values; the engine resolves those mechanically afterward using the `isDynamic` flag you set.
 
 ---
 
@@ -118,7 +123,7 @@ Look for string literals in these patterns:
 
 Rules:
 - Normalize: add leading `/` if missing
-- Dynamic segments (`:id`, `$id`, `[id]`) → replace with `1`
+- Dynamic segments (`:id`, `$id`, `[id]`) → replace with `1`, mark **isDynamic: true** for that URL
 - Wildcard `*` or `**` → skip
 - Index routes (`index: true` or `path: ""` under a parent) → use the parent path
 - Catch-all / not-found routes (`path: "*"`, `path: "404"`) → skip
@@ -141,17 +146,22 @@ Do NOT emit a URL for:
 
 ---
 
-## Step 5 — Write output
+## Step 5 — Output
 
-Write this JSON to `{{CYCLE_STATE_DIR}}/probe-urls.json`:
+Print this JSON as your entire response (no Write tool, no markdown fences in the final output):
 ```json
 {
-  "urls": ["/reports", "/invoices/1"],
+  "urls": [
+    { "url": "/reports", "isDynamic": false },
+    { "url": "/invoices/1", "isDynamic": true }
+  ],
   "layoutAffected": false,
   "framework": "nextjs-app-router"
 }
 ```
 
 `framework` must be one of: `nextjs-app-router`, `nextjs-pages-router`, `nuxt`, `sveltekit`, `spa`, `unknown`
+
+`isDynamic` must be `true` only for URLs produced by substituting a placeholder into a `[param]`/`[...slug]`/`:id`/`$id` segment (see Step 2/Step 3 rules) — `false` for every static route. Do not attempt to resolve a "real" value for dynamic segments yourself; the engine substitutes any configured `routeParams` override after the fact based on this flag.
 
 If no page files changed and no routes extracted: `{ "urls": [], "layoutAffected": false, "framework": "detected-framework" }`

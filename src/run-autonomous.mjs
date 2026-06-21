@@ -28,7 +28,7 @@ import { createPromptBuilder } from "./engine/prompt-builder.mjs";
 import { createCycleRunner } from "./engine/cycle-runner.mjs";
 import { createSmokeOrchestrator } from "./engine/smoke-orchestrator.mjs";
 import { mergeProbeUrls } from "./engine/probe-urls.mjs";
-import { scanAllRoutes, deriveFrontendRoot, detectFramework } from "./engine/route-scanner.mjs";
+import { scanAllRoutes, deriveFrontendRoot, detectFramework, buildDynamicUrlOverrides } from "./engine/route-scanner.mjs";
 
 // ── Load Config ───────────────────────────────────────────────────────────────
 
@@ -276,13 +276,18 @@ async function runPreSmokeStep() {
     return;
   }
 
-  // 4. Spawn mini claude
+  // routeParams maps dynamic segment names (e.g. "id", "slug") to a concrete value
+  // to substitute when scanning the filesystem — falls back to a generic "1"/"test"
+  // placeholder per-segment when a name isn't configured.
+  const routeParams = (config.routeParams && typeof config.routeParams === "object") ? config.routeParams : {};
+
+  // 4. Spawn mini claude — no Write tool. The detector only ever prints JSON
+  // (--output-format text); the engine parses stdout and writes probe-urls.json
+  // itself, mechanically, so routeParams substitution always goes through one
+  // code path (deriveRouteInfo) instead of needing the LLM to also know about it.
   const probeUrlsOut = join(CYCLE_DIR, "probe-urls.json");
   const isWindows = process.platform === "win32";
 
-  // Capture stdout — in --output-format text mode Claude often prints the JSON as its
-  // text response rather than using the Write tool. We accept either: if the Write tool
-  // wrote probe-urls.json that takes precedence; otherwise we parse stdout as fallback.
   let stdoutBuf = "";
 
   await new Promise((resolve) => {
@@ -298,7 +303,7 @@ async function runPreSmokeStep() {
       writeFileSync(promptFile, promptText, "utf8");
       writeFileSync(
         psFile,
-        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read,Write" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
+        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
         "utf8",
       );
       proc = _spawn(
@@ -309,7 +314,7 @@ async function runPreSmokeStep() {
     } else {
       proc = _spawn(
         CLAUDE_EXE,
-        ["-p", promptText, "--allowedTools", "Read,Write", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
+        ["-p", promptText, "--allowedTools", "Read", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     }
@@ -319,25 +324,37 @@ async function runPreSmokeStep() {
     proc.on("error", () => { clearTimeout(timeout); resolve(); });
   });
 
-  // 5. If url-detector didn't write probe-urls.json via Write tool, try parsing stdout.
-  //    In --output-format text mode Claude often prints JSON as its text response.
+  // 5. Parse the detector's stdout JSON: { urls: [{url, isDynamic}], layoutAffected, framework }.
+  // Mechanically split into urls/dynamicUrls and resolve routeParams overrides for any
+  // dynamic URL that matches a changed page file — via the same deriveRouteInfo used by
+  // scanAllRoutes, so there is exactly one implementation of "what routeParams resolves to".
   if (!existsSync(probeUrlsOut)) {
     const jsonMatch = stdoutBuf.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (typeof parsed.framework === "string") {
-          writeFileSync(probeUrlsOut, JSON.stringify(parsed, null, 2), "utf8");
+        if (typeof parsed.framework === "string" && Array.isArray(parsed.urls)) {
+          const overrides = buildDynamicUrlOverrides(changedFiles, frontendRoot, parsed.framework, routeParams);
+          const urls = [];
+          const dynamicUrls = [];
+          for (const entry of parsed.urls) {
+            const rawUrl = typeof entry === "string" ? entry : entry?.url;
+            if (typeof rawUrl !== "string") continue;
+            const isDynamic = typeof entry === "object" && entry.isDynamic === true;
+            const url = isDynamic ? (overrides.get(rawUrl) ?? rawUrl) : rawUrl;
+            urls.push(url);
+            if (isDynamic) dynamicUrls.push(url);
+          }
+          writeFileSync(
+            probeUrlsOut,
+            JSON.stringify({ urls, dynamicUrls, layoutAffected: parsed.layoutAffected === true, framework: parsed.framework }, null, 2),
+            "utf8",
+          );
           console.log(chalk.dim("[PRE-SMOKE] URL detector output captured from stdout"));
         }
       } catch { /* malformed — fall through */ }
     }
   }
-
-  // routeParams maps dynamic segment names (e.g. "id", "slug") to a concrete value
-  // to substitute when scanning the filesystem — falls back to a generic "1"/"test"
-  // placeholder per-segment when a name isn't configured.
-  const routeParams = (config.routeParams && typeof config.routeParams === "object") ? config.routeParams : {};
 
   if (!existsSync(probeUrlsOut)) {
     console.log(chalk.yellow("[PRE-SMOKE] URL detector produced no output — falling back to filesystem scan"));

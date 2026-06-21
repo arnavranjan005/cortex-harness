@@ -543,9 +543,18 @@ The smoke cycle provides a deterministic, harness-managed browser pass after tes
 
 Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smoke step:
 
-1. Spawns a mini-Claude session with `url-detector.md` — the prompt reads the snapshot diff and implement reports to extract changed page URLs.
-2. If the mini-Claude session returns no URLs (or the session fails), falls back to `route-scanner.mjs` — a fully deterministic filesystem scanner with no LLM dependency.
-3. Merges detected URLs with the explicit `smokeUrls[]` list from `harness.config.json`. Duplicates are de-duped.
+1. Spawns a mini-Claude session with `url-detector.md` (`--allowedTools "Read"` only — no `Write`). The session reads the changed-files list inline and **prints** JSON as its response: `{ urls: [{ url, isDynamic }], layoutAffected, framework }`. `isDynamic` marks any URL produced by substituting a generic placeholder (`"1"`/`"test"`) into a `[param]`/`[...slug]`/`:id`/`$id` segment — the LLM only ever uses the generic placeholder itself, since it has no knowledge of project-specific `routeParams`.
+2. The engine parses that stdout text (regex-extracted JSON, since `--output-format text` returns prose-wrapped output), splits it into flat `urls`/`dynamicUrls` arrays, and for every `isDynamic: true` entry calls `buildDynamicUrlOverrides(changedFiles, frontendRoot, framework, routeParams)` (`route-scanner.mjs`) to swap the LLM's generic placeholder for the `routeParams`-resolved value — reusing the same `deriveRouteInfo` logic `scanAllRoutes` uses, so there is exactly one implementation of "what a `routeParams` override resolves to." This result is what gets written to `probe-urls.json` — the file's shape is unchanged from before (`{ urls: [string], dynamicUrls: [string], layoutAffected, framework }`); only the LLM's wire format changed.
+3. If the mini-Claude session returns no parseable output (or the session fails), falls back to `route-scanner.mjs` — a fully deterministic filesystem scanner with no LLM dependency, which natively applies `routeParams` to every dynamic route it finds.
+4. Separately, if `layoutAffected: true` (or no URLs were detected at all), `scanAllRoutes` always runs as a full-tree supplement regardless of step 2 — this guarantees every route gets covered, not just the ones in the diff, and predates/is independent of the `isDynamic` resolution above.
+5. Merges detected URLs with the explicit `smokeUrls[]` list from `harness.config.json`. Duplicates are de-duped.
+
+**`layoutAffected` triggers** (set by the LLM per Step 2/2b of `url-detector.md`, since detecting it requires reading file contents or path conventions the engine doesn't pre-check):
+- Next.js app router: any `layout.tsx` changed, any path/nesting
+- Next.js pages router: `_app.tsx`/`_document.tsx` changed
+- Nuxt: any file under `layouts/` changed (any filename — not just `default.vue`/`app.vue`)
+- SvelteKit: any `+layout.svelte` changed, any path/nesting (not just the root one)
+- Any framework: a changed shared-dependency file (`hooks/`, `components/`, `context/`, `lib/`, `utils/`, `store/`) that the root layout/shell file imports
 
 ### Route Scanner (`src/engine/route-scanner.mjs`)
 
@@ -567,6 +576,8 @@ It returns `{ urls, dynamicUrls }` — `dynamicUrls` is the subset of `urls` der
 2. **Flat default** — keyed by param name only (e.g. `"id": "1"`), applied to every route using that name.
 
 If neither is configured, falls back to the generic placeholder.
+
+`buildDynamicUrlOverrides(changedFiles, frontendRoot, framework, routeParams)` supports the pre-smoke step above: for each changed file, derives both its generic-placeholder URL and its `routeParams`-resolved URL via `deriveRouteInfo`, and returns a `Map` from the former to the latter wherever they differ. This is how a `routeParams` override gets applied to a URL the LLM url-detector already found on its own (not just ones discovered by `scanAllRoutes`'s own filesystem walk).
 
 ### Smoke Orchestrator (`src/engine/smoke-orchestrator.mjs`)
 
