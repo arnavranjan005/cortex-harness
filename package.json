@@ -1,6 +1,6 @@
 {
   "name": "cortex-harness",
-  "version": "1.12.1",
+  "version": "1.13.0",
   "description": "Config-driven autonomous Nx agent harness — multi-cycle state machine with Zod validation, git scope enforcement, and self-healing fix injection.",
   "type": "module",
   "license": "MIT",
