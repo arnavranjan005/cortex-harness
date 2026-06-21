@@ -543,13 +543,22 @@ The smoke cycle provides a deterministic, harness-managed browser pass after tes
 
 Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smoke step:
 
-1. Spawns a mini-Claude session with `url-detector.md` — the prompt reads the snapshot diff and implement reports to extract changed page URLs.
-2. If the mini-Claude session returns no URLs (or the session fails), falls back to `route-scanner.mjs` — a fully deterministic filesystem scanner with no LLM dependency.
-3. Merges detected URLs with the explicit `smokeUrls[]` list from `harness.config.json`. Duplicates are de-duped.
+1. Spawns a mini-Claude session with `url-detector.md` (`--allowedTools "Read"` only — no `Write`). The session reads the changed-files list inline and **prints** JSON as its response: `{ urls: [{ url, isDynamic }], layoutAffected, framework }`. `isDynamic` marks any URL produced by substituting a generic placeholder (`"1"`/`"test"`) into a `[param]`/`[...slug]`/`:id`/`$id` segment — the LLM only ever uses the generic placeholder itself, since it has no knowledge of project-specific `routeParams`.
+2. The engine parses that stdout text (regex-extracted JSON, since `--output-format text` returns prose-wrapped output), splits it into flat `urls`/`dynamicUrls` arrays, and for every `isDynamic: true` entry calls `buildDynamicUrlOverrides(changedFiles, frontendRoot, framework, routeParams)` (`route-scanner.mjs`) to swap the LLM's generic placeholder for the `routeParams`-resolved value — reusing the same `deriveRouteInfo` logic `scanAllRoutes` uses, so there is exactly one implementation of "what a `routeParams` override resolves to." This result is what gets written to `probe-urls.json` — the file's shape is unchanged from before (`{ urls: [string], dynamicUrls: [string], layoutAffected, framework }`); only the LLM's wire format changed.
+3. If the mini-Claude session returns no parseable output (or the session fails), falls back to `route-scanner.mjs` — a fully deterministic filesystem scanner with no LLM dependency, which natively applies `routeParams` to every dynamic route it finds.
+4. Separately, if `layoutAffected: true` (or no URLs were detected at all), `scanAllRoutes` always runs as a full-tree supplement regardless of step 2 — this guarantees every route gets covered, not just the ones in the diff, and predates/is independent of the `isDynamic` resolution above.
+5. Merges detected URLs with the explicit `smokeUrls[]` list from `harness.config.json`. Duplicates are de-duped.
+
+**`layoutAffected` triggers** (set by the LLM per Step 2/2b of `url-detector.md`, since detecting it requires reading file contents or path conventions the engine doesn't pre-check):
+- Next.js app router: any `layout.tsx` changed, any path/nesting
+- Next.js pages router: `_app.tsx`/`_document.tsx` changed
+- Nuxt: any file under `layouts/` changed (any filename — not just `default.vue`/`app.vue`)
+- SvelteKit: any `+layout.svelte` changed, any path/nesting (not just the root one)
+- Any framework: a changed shared-dependency file (`hooks/`, `components/`, `context/`, `lib/`, `utils/`, `store/`) that the root layout/shell file imports
 
 ### Route Scanner (`src/engine/route-scanner.mjs`)
 
-`scanAllRoutes()` detects the frontend framework and scans the filesystem:
+`scanAllRoutes(root, frontendRoot, framework, routeParams)` detects the frontend framework and scans the filesystem:
 
 | Framework            | Route detection               |
 | -------------------- | ----------------------------- |
@@ -559,7 +568,16 @@ Before spawning the smoke orchestrator, `run-autonomous.mjs` runs a mini pre-smo
 | SvelteKit            | `src/routes/**/+page.svelte`  |
 | SPA fallback         | index route only              |
 
-`deriveUrlFromPath(filePath, framework)` converts each file path to a browser URL using framework-specific segment rules (dynamic segments, optional catch-all, etc.).
+It returns `{ urls, dynamicUrls }` — `dynamicUrls` is the subset of `urls` derived from substituting a `[param]`/`[...param]` segment, real or placeholder.
+
+`deriveUrlFromPath(filePath, frontendRoot, framework, routeParams)` converts each file path to a browser URL using framework-specific segment rules (dynamic segments, optional catch-all, etc.). `routeParams` (from `harness.config.json`) resolves dynamic segments to concrete values instead of generic placeholders (`"1"` / `"test"`), checked in order:
+
+1. **Route-specific override** — keyed by the route's bracket pattern (e.g. `"/clients/[id]"` → `{ "id": "demo-client-1" }`). Wins when present.
+2. **Flat default** — keyed by param name only (e.g. `"id": "1"`), applied to every route using that name.
+
+If neither is configured, falls back to the generic placeholder.
+
+`buildDynamicUrlOverrides(changedFiles, frontendRoot, framework, routeParams)` supports the pre-smoke step above: for each changed file, derives both its generic-placeholder URL and its `routeParams`-resolved URL via `deriveRouteInfo`, and returns a `Map` from the former to the latter wherever they differ. This is how a `routeParams` override gets applied to a URL the LLM url-detector already found on its own (not just ones discovered by `scanAllRoutes`'s own filesystem walk).
 
 ### Smoke Orchestrator (`src/engine/smoke-orchestrator.mjs`)
 
@@ -572,6 +590,12 @@ For each URL, `smoke-orchestrator.mjs` spawns a **separate mini-Claude session**
 **Auth profiles:** If `harness.config.json` contains `authProfiles`, the orchestrator injects an authenticated `mcp__playwright-<name>__*` MCP server for URLs that require login. The profile is matched by URL pattern or explicitly assigned per-URL. `auth_needed` / `auth_stale` signals cause the orchestrator to stop probing that URL and report it as a failure needing profile attention.
 
 **Budget:** Each URL session is capped at `smokeCheckBudgetPerUrl` USD. The orchestrator tracks cumulative spend and skips remaining URLs if the global run budget is nearly exhausted.
+
+**Dynamic routes:** URLs in `dynamicUrls` (see Route Scanner above) get a relaxed render/network check — a "not found" state (404 text, but normal app chrome, no crash/error overlay) is recorded as `renderSummary.notFoundState: true` and passes, since the placeholder ID may not correspond to a real record. A genuine crash (500, error overlay, blank page) still fails regardless. The same exception applies to a 4xx on the page's own primary record fetch in the network check; any other endpoint failing is still a real issue.
+
+**Failure classification:** Each session classifies its own `issues[]` into `failedSurfaces` (`"frontend"`, `"backend"`, `"infra"`) before returning, since it has context (status codes, console text, CORS detection) a later heuristic can't recover. `mergeResults()` falls back to `inferFallbackSurfaces()` only when a session omits `failedSurfaces` (e.g. malformed/stale report).
+
+**Retry history:** On a `smoke-retry-N` cycle, every prior `smoke-attempt-*.json` snapshot and every `fix-*-smoke-attempt-*.json` report is read from `cycle-state/` and interleaved chronologically into each URL's check prompt (oldest first), so a retry doesn't re-diagnose or contradict a conclusion an earlier fix already reached. The retry's probe list is also narrowed to only the URLs that failed in the most recent snapshot. Each completed smoke run (including retries) writes its own numbered `smoke-attempt-N[-<group>].json` snapshot to `cycle-state/` for this purpose.
 
 ### Auth Command (`cortex-harness auth`)
 
@@ -608,12 +632,7 @@ inject fix-...-attempt-2 + smoke-retry-2
 deliver                                          (failures surfaced as residual risks)
 ```
 
-**Surface routing:** The engine inspects `failures[]` from the `SmokeReport` to determine which fix targets to inject:
-
-- `pageError` present → `frontend-subagent`
-- `apiFailures[]` non-empty → `backend-subagent`
-- Both → two parallel fix cycles
-- Neither (unknown failure type) → `frontend-subagent` as default
+**Surface routing:** The engine reads `failedSurfaces` from the `SmokeReport` (deduped union of each failing URL's own `failedSurfaces`, as classified by the smoke-check session — see Smoke Orchestrator above) to determine which fix targets to inject: one fix cycle per surface present (`"frontend"`, `"backend"`, `"infra"`). If a report predates this field (no `failedSurfaces`), the engine falls back to the old heuristic: `pageError` present → frontend, `apiFailures[]` non-empty → backend, neither → frontend as default.
 
 Fix cycles carry the first three failure descriptions from `failures[]` in their `notes` field so the owning agent has immediate context without reading the full smoke report.
 

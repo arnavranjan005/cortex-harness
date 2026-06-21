@@ -81,6 +81,34 @@ export function printMcpScopeTable(config) {
   console.log();
 }
 
+// routeParams entries are either a flat default ("id": "1") or a per-route
+// override ("/clients/[id]": { "id": "demo-client-1" }) — see route-scanner.mjs.
+export function printRouteParamsTable(config) {
+  const params = config.routeParams ?? {};
+  const keys = Object.keys(params);
+  if (!keys.length) {
+    console.log(chalk.dim("  No routeParams configured. Dynamic segments use generic placeholders (\"1\" / \"test\")."));
+    console.log();
+    return;
+  }
+  console.log();
+  console.log(chalk.bold("  Dynamic route params"));
+  console.log("  " + "─".repeat(60));
+  for (const key of keys) {
+    const value = params[key];
+    if (key.startsWith("/")) {
+      const overrideStr = Object.entries(value ?? {})
+        .map(([p, v]) => `${p}=${v}`)
+        .join(", ");
+      console.log(`  ${chalk.cyan(key)}  ${chalk.dim("(route override)")}  ${overrideStr}`);
+    } else {
+      console.log(`  ${chalk.cyan(key.padEnd(16))}  ${chalk.dim("(flat default)")}  ${value}`);
+    }
+  }
+  console.log("  " + "─".repeat(60));
+  console.log();
+}
+
 export function printScopeTable(config) {
   const agents = config.agents || {};
   const nameWidth = Math.max(...Object.keys(agents).map((k) => k.length), 6);

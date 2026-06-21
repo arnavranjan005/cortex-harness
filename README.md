@@ -226,6 +226,30 @@ cortex-harness config remove-mcp-scope frontend-subagent shadcn
 
 `cortex-harness mcp usage` attributes prior tool calls to the server that made them by parsing the `mcp__<server>__<tool>` prefix Claude Code gives every MCP tool call — this works for any server, including ones added after the fact, with no per-server config needed.
 
+### 2b. Manage dynamic route params
+
+Pages with a `[param]`/`[...param]` segment (e.g. `app/clients/[id]/page.tsx`) get a generic placeholder (`"1"` / `"test"`) substituted in during smoke URL scanning unless you configure a real value via `routeParams` in `harness.config.json`. This applies whether the URL was found by the deterministic filesystem scanner or by the pre-smoke LLM URL detector — the LLM only ever flags a URL as dynamic, the engine mechanically resolves `routeParams` against it afterward, so the substitution logic only lives in one place. Two shapes are supported, checked in order:
+
+- **Route-specific override** — keyed by the bracket route pattern, value is `{ paramName: value }`. Wins when present.
+- **Flat default** — keyed by param name only, applies to every route using that name.
+
+```bash
+# Print the current routeParams table
+cortex-harness config route-params
+
+# Interactive wizard — lists dynamic pages actually found in your project (no
+# need to hand-type a bracket path), asks for a value per param, then asks
+# whether it applies to that one page or to every page using that param name
+cortex-harness config
+# → "Dynamic route params"
+
+# One-shot scripting equivalents
+cortex-harness config set-route-param id 1
+cortex-harness config set-route-override /clients/[id] id demo-client-1
+cortex-harness config remove-route-param id
+cortex-harness config remove-route-param /clients/[id]
+```
+
 ### 3. Run
 
 ```bash
@@ -347,6 +371,7 @@ Reverts are non-destructive: a pre-run snapshot captures uncommitted work before
 | `authProfiles`           | array  | `[]`               | Named auth profiles captured by `cortex-harness auth`            |
 | `smokeUrls`              | array  | `[]`               | Explicit URLs to probe during smoke cycles (merged with detected) |
 | `smokeCheckBudgetPerUrl` | number | —                  | Max USD spend per URL during a smoke run                          |
+| `routeParams`            | object | `{}`               | Concrete values for dynamic route segments during smoke URL scanning — keyed by param name (flat default) or by bracket route pattern (e.g. `"/clients/[id]"`, route-specific override) |
 | `mcpScope`               | object | `{}`               | Map of `"*"` / agent name / cycle type → allowed MCP server names. `"*"` applies to every cycle; a server missing from every key here never loads, even if it's in `.mcp.json`. Managed via `cortex-harness config` / `add-mcp-scope` / `remove-mcp-scope` — see [§2a](#2a-manage-mcp-server-scope) |
 
 `scope: null` — agent may read/verify everywhere (tester, explorer).  
@@ -386,7 +411,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     create-app.md
     reconcile.md
     prompt-orchestration.md
-    url-detector.md             ← pre-smoke URL extraction (mini-Claude session; falls back to route-scanner)
+    url-detector.md             ← pre-smoke URL extraction (mini-Claude session, print-only/no Write; falls back to route-scanner)
   agents/
     backend-subagent.agent.md   ← scope sections auto-patched by cortex-harness config
     frontend-subagent.agent.md
@@ -397,7 +422,11 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     planner-subagent.agent.md
   cycle-state/                  ← written at runtime (gitignored)
     skills.json                 ← skill output forwarded to implement cycles
-    *.json                      ← per-cycle Zod-validated output files
+    probe-urls.json             ← pre-smoke URL detection result (urls, dynamicUrls, layoutAffected, framework — dynamicUrls always routeParams-resolved by the engine)
+    changed-files.json          ← snapshot diff used by implement/reconcile
+    scope-violations.json       ← auto-revert tracking
+    smoke-attempt-N[-<group>].json  ← per-attempt smoke snapshot, used to build retry history
+    *.json                      ← per-cycle Zod-validated output files (explore, plan, implement, reconcile, test, fix, smoke, ...)
   runs/                         ← gitignored
     <timestamp>.jsonl           ← full event log per run
   output/                       ← gitignored

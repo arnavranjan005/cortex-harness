@@ -24,6 +24,18 @@ describe("buildUrlCheckPrompt", () => {
     const p = buildUrlCheckPrompt("/login", "http://localhost:3000", []);
     expect(p).not.toContain("mcp__playwright-");
   });
+
+  test("isDynamic adds the placeholder-ID exception to both render check and network check", () => {
+    const p = buildUrlCheckPrompt("/invoices/1", "http://localhost:3000", [], null, true);
+    expect(p).toContain("NOT a failure — a deliberately designed \"not found\" state");
+    expect(p).toContain("own placeholder\n    record");
+  });
+
+  test("non-dynamic prompt omits the placeholder-ID exception", () => {
+    const p = buildUrlCheckPrompt("/reports", "http://localhost:3000", [], null, false);
+    expect(p).not.toContain("NOT a failure — a deliberately designed \"not found\" state");
+    expect(p).not.toContain("own placeholder\n    record");
+  });
 });
 
 describe("mergeResults", () => {
@@ -66,6 +78,46 @@ describe("mergeResults", () => {
     const r = mergeResults([passing, failing]);
     expect(r.consoleErrors).toHaveLength(1);
     expect(r.consoleErrors[0]).toContain("TypeError");
+  });
+
+  test("uses LLM-provided failedSurfaces when present, even if it disagrees with the heuristic", () => {
+    const r = mergeResults([passing, { ...failing, failedSurfaces: ["infra"] }]);
+    expect(r.failures[0].failedSurfaces).toEqual(["infra"]);
+    expect(r.failedSurfaces).toEqual(["infra"]);
+  });
+
+  test("falls back to inferring frontend+backend when LLM omits failedSurfaces", () => {
+    const r = mergeResults([passing, failing]); // `failing` has no failedSurfaces field
+    expect(r.failures[0].failedSurfaces.sort()).toEqual(["backend", "frontend"]);
+    expect(r.failedSurfaces.sort()).toEqual(["backend", "frontend"]);
+  });
+
+  test("falls back to inferring backend only when render passed but an API 4xx/5xx occurred", () => {
+    const backendOnly = { url: "/clients", profile: "user", status: "fail",
+      pageRenderOk: true, pageError: null,
+      apiCalls: [{ url: "/api/clients", method: "GET", status: 404 }],
+      consoleErrors: [], issues: ["API GET /api/clients returned 404"], staleProfiles: [] };
+    const r = mergeResults([backendOnly]);
+    expect(r.failures[0].failedSurfaces).toEqual(["backend"]);
+  });
+
+  test("falls back to inferring frontend for a console/render issue even when pageRenderOk is true", () => {
+    // Broken image / stuck spinner / console TypeError can fail a page (status: "fail")
+    // without pageRenderOk ever being set false — must not be missed as unclassified.
+    const consoleOnlyFail = { url: "/dashboard", profile: "user", status: "fail",
+      pageRenderOk: true, pageError: null, apiCalls: [],
+      consoleErrors: ["TypeError: Cannot read properties of undefined"],
+      issues: ["TypeError: Cannot read properties of undefined"], staleProfiles: [] };
+    const r = mergeResults([consoleOnlyFail]);
+    expect(r.failures[0].failedSurfaces).toEqual(["frontend"]);
+  });
+
+  test("falls back to inferring infra from a CORS issue when failedSurfaces is omitted", () => {
+    const corsFail = { url: "/reports", profile: "user", status: "fail",
+      pageRenderOk: true, pageError: null, apiCalls: [],
+      consoleErrors: [], issues: ["CORS error on GET /api/reports"], staleProfiles: [] };
+    const r = mergeResults([corsFail]);
+    expect(r.failures[0].failedSurfaces).toEqual(["infra"]);
   });
 
   test("auth_needed result produces authIssue: missing", () => {

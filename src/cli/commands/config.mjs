@@ -7,10 +7,56 @@ import {
   repatchFromConfig,
   printScopeTable,
   printMcpScopeTable,
+  printRouteParamsTable,
 } from "../helpers/harness-config.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
-import { select, text, confirm, log, multiselect } from "../helpers/ui.mjs";
+import { select, text, confirm, log, multiselect, note } from "../helpers/ui.mjs";
 import { serverScopeOptions, scopeListsEqual } from "../helpers/mcp-config.mjs";
+import { deriveFrontendRoot, detectFramework, scanDynamicRoutes, extractParamNames } from "../../engine/route-scanner.mjs";
+
+// Plain-language label for an existing routeParams entry, used in the "remove" picker
+// so a user isn't asked to recognize their own raw JSON key/value shape.
+function describeRouteParamEntry(key, value) {
+  if (key.startsWith("/")) {
+    const pairs = Object.entries(value ?? {}).map(([n, v]) => `${n}=${v}`).join(", ");
+    return `${key} → ${pairs}  (only this page)`;
+  }
+  return `[${key}] = "${value}"  (every page with a [${key}] segment)`;
+}
+
+// Walks the user through giving a value to each param a route needs, asking for
+// each one whether it should apply everywhere that param name is used or only to
+// this specific page — written as a plain choice, not as "flat default" jargon.
+async function setValuesForRoute(config, route, log, text, confirm) {
+  let changed = false;
+  for (const name of route.paramNames) {
+    const value = (await text({
+      message: `Value for "${name}" on ${route.routePattern} (currently shown as ${route.exampleUrl})`,
+      placeholder: "e.g. 1, demo-client, my-first-post",
+      fallback: "",
+    })).trim();
+    if (!value) { log.warn(`Skipped "${name}" — no value entered.`); continue; }
+
+    const everywhere = await confirm({
+      message: `Use "${value}" for every page that has a [${name}] segment, not just this one?`,
+      initialValue: false,
+      fallback: false,
+    });
+
+    if (everywhere) {
+      config.routeParams[name] = value;
+      log.success(`"${name}" = "${value}" will be used on every page with a [${name}] segment.`);
+    } else {
+      if (typeof config.routeParams[route.routePattern] !== "object" || config.routeParams[route.routePattern] === null || Array.isArray(config.routeParams[route.routePattern])) {
+        config.routeParams[route.routePattern] = {};
+      }
+      config.routeParams[route.routePattern][name] = value;
+      log.success(`"${name}" = "${value}" will be used only on ${route.routePattern}.`);
+    }
+    changed = true;
+  }
+  return changed;
+}
 
 function printDevServerTable(config) {
   const ds = config.devServer;
@@ -55,6 +101,7 @@ export function registerConfigCommand(program) {
         { value: "scopes", label: "Agent file scopes" },
         { value: "mcp", label: "MCP server scope", hint: "which servers each agent can use" },
         { value: "devserver", label: "Dev server services" },
+        { value: "routeparams", label: "Dynamic route params", hint: "values for [id]-style segments during smoke scans" },
         { value: "exit", label: "Exit" },
       ],
       initialValue: "scopes",
@@ -178,6 +225,89 @@ export function registerConfigCommand(program) {
         delete config.devServer;
         dirty = true;
         log.success("devServer cleared");
+      }
+    } else if (top === "routeparams") {
+      if (!config.routeParams) config.routeParams = {};
+
+      note(
+        "Some pages have a placeholder in their URL, like [id] in /clients/[id].\n" +
+          "When Cortex test-visits these pages it fills that in with a fake value\n" +
+          "(\"1\" or \"test\") unless you give it a real one here — e.g. a real client ID\n" +
+          "so the page actually loads instead of showing a 404.",
+        "Dynamic route params",
+      );
+
+      const frontendRoot = deriveFrontendRoot(config);
+      const framework = detectFramework(process.cwd(), frontendRoot);
+      let detected = [];
+      try {
+        detected = scanDynamicRoutes(process.cwd(), frontendRoot, framework);
+      } catch { /* best-effort detection */ }
+
+      printRouteParamsTable(config);
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const pickOptions = detected.map((d) => ({
+          value: d.routePattern,
+          label: d.routePattern,
+          hint: `e.g. ${d.exampleUrl} right now`,
+        }));
+
+        const action = await select({
+          message: "What do you want to do?",
+          options: [
+            ...(pickOptions.length
+              ? [{ value: "__pick", label: "Set a value for a detected page", hint: `${pickOptions.length} found in this project` }]
+              : []),
+            { value: "__manual", label: "Set a value by typing a route myself" },
+            { value: "__remove", label: "Remove a value I already set" },
+            { value: "__back", label: "← Back" },
+          ],
+          fallback: "__back",
+        });
+        if (action === "__back") break;
+
+        if (action === "__pick") {
+          if (!pickOptions.length) { log.warn("No dynamic pages detected in this project."); continue; }
+          const routePattern = await select({
+            message: "Which page?",
+            options: [...pickOptions, { value: "__cancel", label: "← Cancel" }],
+            fallback: "__cancel",
+          });
+          if (routePattern === "__cancel") continue;
+          const route = detected.find((d) => d.routePattern === routePattern);
+          if (await setValuesForRoute(config, route, log, text, confirm)) dirty = true;
+        } else if (action === "__manual") {
+          const route = (await text({
+            message: "Route pattern, written like it appears in your code (e.g. /clients/[id])",
+            placeholder: "/clients/[id]",
+            fallback: "",
+          })).trim();
+          if (!route || !route.startsWith("/") || !route.includes("[")) {
+            log.warn('Enter a path starting with "/" that contains a [param] segment, e.g. /clients/[id].');
+            continue;
+          }
+          const paramNames = extractParamNames(route);
+          if (!paramNames.length) { log.warn("Couldn't find a [param] segment in that path."); continue; }
+          if (await setValuesForRoute(config, { routePattern: route, paramNames, exampleUrl: route }, log, text, confirm)) dirty = true;
+        } else if (action === "__remove") {
+          const keys = Object.keys(config.routeParams);
+          if (!keys.length) { log.warn("Nothing configured yet."); continue; }
+          const key = await select({
+            message: "Remove which one?",
+            options: [
+              ...keys.map((k) => ({ value: k, label: describeRouteParamEntry(k, config.routeParams[k]) })),
+              { value: "__cancel", label: "← Cancel" },
+            ],
+            fallback: "__cancel",
+          });
+          if (key === "__cancel") continue;
+          delete config.routeParams[key];
+          dirty = true;
+          log.success(`Removed "${key}"`);
+        }
+        printRouteParamsTable(config);
       }
     }
 
@@ -371,5 +501,64 @@ export function registerConfigCommand(program) {
       delete config.devServer;
       await saveHarnessConfig(configPath, config);
       console.log(chalk.green("  ✓ devServer removed from harness.config.json"));
+    });
+
+  // `cortex-harness config route-params` → print routeParams table
+  configCmd
+    .command("route-params")
+    .description("Print configured dynamic route param values (used when scanning [id]-style segments for smoke checks)")
+    .action(async () => {
+      const { config } = await loadHarnessConfig(process.cwd());
+      printRouteParamsTable(config);
+    });
+
+  // `cortex-harness config set-route-param <name> <value>` → flat default, applies to every route using that param name
+  configCmd
+    .command("set-route-param <name> <value>")
+    .description("Set a flat default value for a route param name (e.g. id → 1)")
+    .action(async (name, value) => {
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      if (!config.routeParams) config.routeParams = {};
+      config.routeParams[name] = value;
+      await saveHarnessConfig(configPath, config);
+      console.log(chalk.green(`  ✓ Set flat default "${name}" = "${value}"`));
+      printRouteParamsTable(config);
+    });
+
+  // `cortex-harness config set-route-override <routePattern> <name> <value>` → per-route override, wins over flat default
+  configCmd
+    .command("set-route-override <routePattern> <name> <value>")
+    .description("Set a route-specific param override (e.g. /clients/[id] id demo-client-1) — wins over a flat default")
+    .action(async (routePattern, name, value) => {
+      if (!routePattern.startsWith("/")) {
+        console.error(chalk.red('  routePattern must start with "/" (e.g. /clients/[id])'));
+        process.exit(1);
+      }
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      if (!config.routeParams) config.routeParams = {};
+      const existing = config.routeParams[routePattern];
+      config.routeParams[routePattern] =
+        existing && typeof existing === "object" && !Array.isArray(existing)
+          ? { ...existing, [name]: value }
+          : { [name]: value };
+      await saveHarnessConfig(configPath, config);
+      console.log(chalk.green(`  ✓ Set override ${routePattern} → "${name}" = "${value}"`));
+      printRouteParamsTable(config);
+    });
+
+  // `cortex-harness config remove-route-param <key>` → remove a flat default or an entire route override entry
+  configCmd
+    .command("remove-route-param <key>")
+    .description("Remove a flat default (by param name) or an entire route override entry (by route pattern)")
+    .action(async (key) => {
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      if (!config.routeParams || !(key in config.routeParams)) {
+        console.log(chalk.yellow(`  "${key}" not found in routeParams.`));
+        process.exit(0);
+      }
+      delete config.routeParams[key];
+      await saveHarnessConfig(configPath, config);
+      console.log(chalk.green(`  ✓ Removed "${key}" from routeParams`));
+      printRouteParamsTable(config);
     });
 }

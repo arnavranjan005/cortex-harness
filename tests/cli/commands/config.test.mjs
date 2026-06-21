@@ -293,3 +293,104 @@ test('config add-mcp-scope + remove-mcp-scope round-trip leaves mcpScope unchang
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── Dynamic route params subcommands ────────────────────────────────────────
+
+test('config route-params prints table when nothing configured', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'route-params'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('No routeParams configured');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config set-route-param writes a flat default', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'set-route-param', 'id', '1'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Set flat default');
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.routeParams.id).toBe('1');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config set-route-override writes a per-route override without clobbering existing keys', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    spawnSync('node', [CLI, 'config', 'set-route-override', '/clients/[id]', 'id', 'demo-client-1'], { cwd: dir, encoding: 'utf8' });
+    const result = spawnSync('node', [CLI, 'config', 'set-route-override', '/clients/[id]', 'tab', 'invoices'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.routeParams['/clients/[id]']).toEqual({ id: 'demo-client-1', tab: 'invoices' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config set-route-override rejects a route pattern without a leading slash', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'set-route-override', 'clients/[id]', 'id', '1'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('must start with');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config remove-route-param removes a flat default', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    spawnSync('node', [CLI, 'config', 'set-route-param', 'id', '1'], { cwd: dir, encoding: 'utf8' });
+
+    const result = spawnSync('node', [CLI, 'config', 'remove-route-param', 'id'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Removed');
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.routeParams.id).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config remove-route-param removes an entire route override entry', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    spawnSync('node', [CLI, 'config', 'set-route-override', '/clients/[id]', 'id', 'demo-client-1'], { cwd: dir, encoding: 'utf8' });
+
+    const result = spawnSync('node', [CLI, 'config', 'remove-route-param', '/clients/[id]'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+
+    const config = JSON.parse(readFileSync(join(dir, 'harness.config.json'), 'utf8'));
+    expect(config.routeParams['/clients/[id]']).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config remove-route-param is no-op when key not present', () => {
+  const dir = makeTmpDir();
+  try {
+    initDir(dir);
+    const result = spawnSync('node', [CLI, 'config', 'remove-route-param', 'nonexistent'], { cwd: dir, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('not found');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

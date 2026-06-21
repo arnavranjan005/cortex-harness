@@ -28,7 +28,7 @@ import { createPromptBuilder } from "./engine/prompt-builder.mjs";
 import { createCycleRunner } from "./engine/cycle-runner.mjs";
 import { createSmokeOrchestrator } from "./engine/smoke-orchestrator.mjs";
 import { mergeProbeUrls } from "./engine/probe-urls.mjs";
-import { scanAllRoutes, deriveFrontendRoot, detectFramework } from "./engine/route-scanner.mjs";
+import { scanAllRoutes, deriveFrontendRoot, detectFramework, buildDynamicUrlOverrides } from "./engine/route-scanner.mjs";
 
 // ── Load Config ───────────────────────────────────────────────────────────────
 
@@ -276,13 +276,18 @@ async function runPreSmokeStep() {
     return;
   }
 
-  // 4. Spawn mini claude
+  // routeParams maps dynamic segment names (e.g. "id", "slug") to a concrete value
+  // to substitute when scanning the filesystem — falls back to a generic "1"/"test"
+  // placeholder per-segment when a name isn't configured.
+  const routeParams = (config.routeParams && typeof config.routeParams === "object") ? config.routeParams : {};
+
+  // 4. Spawn mini claude — no Write tool. The detector only ever prints JSON
+  // (--output-format text); the engine parses stdout and writes probe-urls.json
+  // itself, mechanically, so routeParams substitution always goes through one
+  // code path (deriveRouteInfo) instead of needing the LLM to also know about it.
   const probeUrlsOut = join(CYCLE_DIR, "probe-urls.json");
   const isWindows = process.platform === "win32";
 
-  // Capture stdout — in --output-format text mode Claude often prints the JSON as its
-  // text response rather than using the Write tool. We accept either: if the Write tool
-  // wrote probe-urls.json that takes precedence; otherwise we parse stdout as fallback.
   let stdoutBuf = "";
 
   await new Promise((resolve) => {
@@ -298,7 +303,7 @@ async function runPreSmokeStep() {
       writeFileSync(promptFile, promptText, "utf8");
       writeFileSync(
         psFile,
-        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read,Write" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
+        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
         "utf8",
       );
       proc = _spawn(
@@ -309,7 +314,7 @@ async function runPreSmokeStep() {
     } else {
       proc = _spawn(
         CLAUDE_EXE,
-        ["-p", promptText, "--allowedTools", "Read,Write", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
+        ["-p", promptText, "--allowedTools", "Read", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     }
@@ -319,15 +324,32 @@ async function runPreSmokeStep() {
     proc.on("error", () => { clearTimeout(timeout); resolve(); });
   });
 
-  // 5. If url-detector didn't write probe-urls.json via Write tool, try parsing stdout.
-  //    In --output-format text mode Claude often prints JSON as its text response.
+  // 5. Parse the detector's stdout JSON: { urls: [{url, isDynamic}], layoutAffected, framework }.
+  // Mechanically split into urls/dynamicUrls and resolve routeParams overrides for any
+  // dynamic URL that matches a changed page file — via the same deriveRouteInfo used by
+  // scanAllRoutes, so there is exactly one implementation of "what routeParams resolves to".
   if (!existsSync(probeUrlsOut)) {
     const jsonMatch = stdoutBuf.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (typeof parsed.framework === "string") {
-          writeFileSync(probeUrlsOut, JSON.stringify(parsed, null, 2), "utf8");
+        if (typeof parsed.framework === "string" && Array.isArray(parsed.urls)) {
+          const overrides = buildDynamicUrlOverrides(changedFiles, frontendRoot, parsed.framework, routeParams);
+          const urls = [];
+          const dynamicUrls = [];
+          for (const entry of parsed.urls) {
+            const rawUrl = typeof entry === "string" ? entry : entry?.url;
+            if (typeof rawUrl !== "string") continue;
+            const isDynamic = typeof entry === "object" && entry.isDynamic === true;
+            const url = isDynamic ? (overrides.get(rawUrl) ?? rawUrl) : rawUrl;
+            urls.push(url);
+            if (isDynamic) dynamicUrls.push(url);
+          }
+          writeFileSync(
+            probeUrlsOut,
+            JSON.stringify({ urls, dynamicUrls, layoutAffected: parsed.layoutAffected === true, framework: parsed.framework }, null, 2),
+            "utf8",
+          );
           console.log(chalk.dim("[PRE-SMOKE] URL detector output captured from stdout"));
         }
       } catch { /* malformed — fall through */ }
@@ -337,12 +359,12 @@ async function runPreSmokeStep() {
   if (!existsSync(probeUrlsOut)) {
     console.log(chalk.yellow("[PRE-SMOKE] URL detector produced no output — falling back to filesystem scan"));
     const FILE_BASED_FW = new Set(["nextjs-app-router", "nextjs-pages-router", "nuxt", "sveltekit"]);
-    const fallbackUrls = FILE_BASED_FW.has(detectedFramework)
-      ? scanAllRoutes(ROOT, frontendRoot, detectedFramework)
-      : [];
-    writeFileSync(probeUrlsOut, JSON.stringify({ urls: fallbackUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
-    if (fallbackUrls.length) {
-      console.log(chalk.dim(`[PRE-SMOKE] ${fallbackUrls.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+    const fallback = FILE_BASED_FW.has(detectedFramework)
+      ? scanAllRoutes(ROOT, frontendRoot, detectedFramework, routeParams)
+      : { urls: [], dynamicUrls: [] };
+    writeFileSync(probeUrlsOut, JSON.stringify({ urls: fallback.urls, dynamicUrls: fallback.dynamicUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
+    if (fallback.urls.length) {
+      console.log(chalk.dim(`[PRE-SMOKE] ${fallback.urls.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
     }
   }
 
@@ -357,23 +379,26 @@ async function runPreSmokeStep() {
       ? probe.framework
       : detectedFramework;
     let currentUrls = probe.urls ?? [];
+    let dynamicUrls = new Set(probe.dynamicUrls ?? []);
 
-    // Merge user-configured smokeUrls (always)
+    // Merge user-configured smokeUrls (always) — these are concrete, user-supplied
+    // URLs, never placeholder-derived, so they are never added to dynamicUrls.
     const { merged: afterSmoke, appended } = mergeProbeUrls(currentUrls, configSmokeUrls);
     currentUrls = afterSmoke;
 
     // When layoutAffected OR no URLs detected yet: scan filesystem to guarantee coverage
     let scannedCount = 0;
     if ((probe.layoutAffected || !currentUrls.length) && FILE_BASED_FRAMEWORKS.has(framework)) {
-      const scanned = scanAllRoutes(ROOT, frontendRoot, framework);
+      const scanned = scanAllRoutes(ROOT, frontendRoot, framework, routeParams);
       const before = currentUrls.length;
-      currentUrls = [...new Set([...currentUrls, ...scanned])];
+      currentUrls = [...new Set([...currentUrls, ...scanned.urls])];
+      for (const u of scanned.dynamicUrls) dynamicUrls.add(u);
       scannedCount = currentUrls.length - before;
     }
 
     const changed = appended.length || scannedCount > 0;
     if (changed) {
-      writeFileSync(probeUrlsOut, JSON.stringify({ ...probe, urls: currentUrls }, null, 2), "utf8");
+      writeFileSync(probeUrlsOut, JSON.stringify({ ...probe, urls: currentUrls, dynamicUrls: [...dynamicUrls].sort() }, null, 2), "utf8");
     }
 
     if (currentUrls.length) {
@@ -389,12 +414,12 @@ async function runPreSmokeStep() {
     // Log the real error for debugging
     console.log(chalk.yellow(`[PRE-SMOKE] route merge failed (${err?.message ?? String(err)}) — falling back to filesystem scan`));
     try {
-      const fallbackUrls = FILE_BASED_FRAMEWORKS.has(detectedFramework)
-        ? scanAllRoutes(ROOT, frontendRoot, detectedFramework)
-        : [];
-      const merged = mergeProbeUrls(fallbackUrls, configSmokeUrls).merged;
+      const fallback = FILE_BASED_FRAMEWORKS.has(detectedFramework)
+        ? scanAllRoutes(ROOT, frontendRoot, detectedFramework, routeParams)
+        : { urls: [], dynamicUrls: [] };
+      const merged = mergeProbeUrls(fallback.urls, configSmokeUrls).merged;
       if (merged.length) {
-        writeFileSync(probeUrlsOut, JSON.stringify({ urls: merged, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
+        writeFileSync(probeUrlsOut, JSON.stringify({ urls: merged, dynamicUrls: fallback.dynamicUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
         console.log(chalk.dim(`[PRE-SMOKE] ${merged.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
       } else {
         console.log(chalk.yellow(`[PRE-SMOKE] No URLs to probe — add routes to smokeUrls[] in harness.config.json`));
@@ -583,11 +608,73 @@ async function main() {
       }
 
       const probeUrlsPath = join(CYCLE_DIR, "probe-urls.json");
-      const probeUrlsJson = existsSync(probeUrlsPath)
+      let probeUrlsJson = existsSync(probeUrlsPath)
         ? readFileSync(probeUrlsPath, "utf8")
         : '{"urls":[],"layoutAffected":false}';
 
-      const result = await runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl);
+      // For retry smoke cycles — collect full chronological history and narrow URL list
+      // to only previously-failed pages. All history is sent to every per-URL agent;
+      // the prompt instructs each agent to focus on its specific URL.
+      let priorSmokeContext = null;
+      if (cycle.id.startsWith("smoke-retry-")) {
+        const sg = cycle.taskGroup;
+        const smokeSuffix = sg ? `-${sg}` : "";
+
+        // Read ALL smoke-attempt-N.json snapshots in chronological order.
+        // Each entry gets _attempt (number) and _file (name) metadata so the prompt
+        // can interleave them with the matching fix reports.
+        let smokeAttempts = [];
+        try {
+          smokeAttempts = readdirSync(CYCLE_DIR)
+            .filter(f => new RegExp(`^smoke-attempt-\\d+${smokeSuffix}\.json$`).test(f))
+            .sort((a, b) => {
+              const nA = parseInt(a.match(/smoke-attempt-(\d+)/)[1]);
+              const nB = parseInt(b.match(/smoke-attempt-(\d+)/)[1]);
+              return nA - nB;
+            })
+            .map(f => {
+              try {
+                const n = parseInt(f.match(/smoke-attempt-(\d+)/)[1]);
+                return { _attempt: n, _file: f, ...JSON.parse(readFileSync(join(CYCLE_DIR, f), "utf8")) };
+              } catch { return null; }
+            })
+            .filter(Boolean);
+        } catch { /* cycle-state unreadable */ }
+
+        // Read all fix-smoke reports with _file metadata so the prompt can
+        // match each fix to the smoke attempt number in its filename.
+        let fixReports = [];
+        try {
+          fixReports = readdirSync(CYCLE_DIR)
+            .filter(f => /^fix-.*-smoke-attempt-.*\.json$/.test(f))
+            .sort()
+            .map(f => {
+              try { return { _file: f, ...JSON.parse(readFileSync(join(CYCLE_DIR, f), "utf8")) }; }
+              catch { return null; }
+            })
+            .filter(Boolean);
+        } catch { /* cycle-state unreadable */ }
+
+        if (smokeAttempts.length || fixReports.length) {
+          priorSmokeContext = { smokeAttempts, fixReports };
+
+          // Narrow probe-urls to only URLs that previously FAILED.
+          // Use the most recent smoke attempt as the source of truth for failures.
+          const lastAttempt = smokeAttempts[smokeAttempts.length - 1];
+          if (lastAttempt?.failures?.length) {
+            try {
+              const probe = JSON.parse(probeUrlsJson);
+              const failedUrls = lastAttempt.failures.map(f => f.url).filter(Boolean);
+              if (failedUrls.length) {
+                probeUrlsJson = JSON.stringify({ ...probe, urls: failedUrls });
+                console.log(chalk.dim(`[SMOKE-RETRY] Narrowed to ${failedUrls.length} previously-failed URL(s): ${failedUrls.join(", ")}`));
+              }
+            } catch { /* malformed probeUrlsJson — run full list */ }
+          }
+        }
+      }
+
+      const result = await runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl, priorSmokeContext);
       devServerProcs.forEach(p => killProc(p));
 
       // Clean up smoke temp assets
@@ -752,12 +839,24 @@ async function main() {
             ).length;
             if (!testReport.passed && !testReport.skipped && !testReport.partial && !testReport.authIssue && totalSmokeAttempts <= MAX_RETRIES) {
               const failures = testReport.failures ?? [];
-              const hasFrontendFailure = failures.some((f) => f.pageError != null || (f.issues?.length && !f.apiFailures?.length));
-              const hasApiFailure = failures.some((f) => Array.isArray(f.apiFailures) && f.apiFailures.length > 0);
-              const surfaces = [];
-              if (hasFrontendFailure) surfaces.push("frontend");
-              if (hasApiFailure) surfaces.push("backend");
-              if (!surfaces.length) surfaces.push("frontend");
+              // Prefer the smoke-check agent's own classification (it has full context —
+              // status codes, console text, CORS detection — that a post-hoc shape match
+              // over apiFailures/pageError does not). Fall back to the old heuristic only
+              // if the agent didn't report failedSurfaces (e.g. stale report format).
+              const reported = testReport.failedSurfaces?.length
+                ? testReport.failedSurfaces
+                : failures.flatMap((f) => f.failedSurfaces ?? []);
+              const surfaces = reported.length
+                ? [...new Set(reported.map((s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown"))]
+                : (() => {
+                    const hasFrontendFailure = failures.some((f) => f.pageError != null || (f.issues?.length && !f.apiFailures?.length));
+                    const hasApiFailure = failures.some((f) => Array.isArray(f.apiFailures) && f.apiFailures.length > 0);
+                    const fallback = [];
+                    if (hasFrontendFailure) fallback.push("frontend");
+                    if (hasApiFailure) fallback.push("backend");
+                    if (!fallback.length) fallback.push("frontend");
+                    return fallback;
+                  })();
 
               const deliverIdx = queue.cycles.findIndex((c) => c.type === "deliver");
               const fixCycles = surfaces.map((surface) => ({
