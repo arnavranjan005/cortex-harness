@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { writeFileSync, existsSync, readFileSync } from "fs";
 import { SEQUENTIAL_TYPES } from "./constants.mjs";
+import { logger } from "../logger.mjs";
 
 /**
  * Returns queue read/write/batch helpers bound to the given runtime context.
@@ -27,9 +28,9 @@ export function createQueueManager({ QUEUE_FILE, CONFIGURED_AGENTS, appendLog })
   function printPendingQueue(queue) {
     const pending = queue.cycles.filter((c) => c.status === "pending");
     if (!pending.length) return;
-    console.log(`  ${chalk.dim(`Queue updated — ${pending.length} pending:`)}`);
+    logger.info(`  ${chalk.dim(`Queue updated — ${pending.length} pending:`)}`);
     pending.forEach((c) =>
-      console.log(
+      logger.info(
         `    ${chalk.dim("·")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`,
       ),
     );
@@ -103,7 +104,7 @@ export function createQueueManager({ QUEUE_FILE, CONFIGURED_AGENTS, appendLog })
     if (batch.length === 1) return batch;
 
     if (!safeToParallelize(batch)) {
-      console.log(
+      logger.info(
         `  [SERIALIZE] Write-scope overlap detected — running ${batch[0].id} alone`,
       );
       return [batch[0]];
@@ -196,7 +197,7 @@ export function createQueueManager({ QUEUE_FILE, CONFIGURED_AGENTS, appendLog })
       const { reason, subTask, suggestedPromptType, suggestedAgents = [], group } =
         entry;
       if (!group || !subTask) {
-        console.log(
+        logger.info(
           `  ${chalk.yellow("[RE-PLAN]")} Skipping malformed requiresAdditionalGroups entry (missing group or subTask)`,
         );
         continue;
@@ -210,10 +211,10 @@ export function createQueueManager({ QUEUE_FILE, CONFIGURED_AGENTS, appendLog })
       );
       queue.cycles.splice(insertAt + offset, 0, ...newCycles);
       offset += newCycles.length;
-      console.log(
+      logger.info(
         `\n  ${chalk.magenta("[RE-PLAN]")} Injecting ${chalk.bold(newCycles.length)} cycles for additional group ${chalk.cyan(`"${group}"`)}: ${subTask}`,
       );
-      if (reason) console.log(`    ${chalk.dim("Reason:")} ${reason}`);
+      if (reason) logger.info(`    ${chalk.dim("Reason:")} ${reason}`);
     }
 
     if (offset > 0) {

@@ -2,6 +2,7 @@ import fs from "fs-extra";
 import path from "path";
 import { spawn } from "child_process";
 import chalk from "chalk";
+import { logger } from "../../logger.mjs";
 
 // ctx: { pkgRoot }
 export function registerRunCommand(program, ctx) {
@@ -19,7 +20,7 @@ export function registerRunCommand(program, ctx) {
       if (options.taskFile) {
         const taskFilePath = path.resolve(process.cwd(), options.taskFile);
         if (!fs.existsSync(taskFilePath)) {
-          console.error(chalk.red(`  Task file not found: ${taskFilePath}`));
+          logger.error(chalk.red(`  Task file not found: ${taskFilePath}`));
           process.exit(1);
         }
         task = fs.readFileSync(taskFilePath, "utf8").trim();
@@ -38,15 +39,15 @@ export function registerRunCommand(program, ctx) {
       }
 
       if (!task) {
-        console.error(
+        logger.error(
           chalk.red(
             "  No task provided. Pass a task string, pipe via stdin, or use --task-file.",
           ),
         );
-        console.error(
+        logger.error(
           chalk.dim('  Example: cortex-harness run "fix the login bug"'),
         );
-        console.error(
+        logger.error(
           chalk.dim('  Pipe:    echo "fix the login bug" | cortex-harness run'),
         );
         process.exit(1);

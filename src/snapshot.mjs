@@ -1,3 +1,4 @@
+import { logger } from "./logger.mjs";
 /**
  * Pre-run snapshot manager.
  *
@@ -145,7 +146,7 @@ export function createSnapshotManager({
 
     if (!dirty.length) return;
     captureFiles(dirty);
-    console.log(
+    logger.info(
       `\n  ${chalk.dim("[SNAPSHOT]")} captured ${dirty.length} uncommitted file(s) before run start${pruned ? chalk.dim(` (pruned ${pruned} stale)`) : ""}`,
     );
   }
@@ -168,7 +169,7 @@ export function createSnapshotManager({
         .filter(Boolean);
       if (!files.length) return;
       captureFiles(files);
-      console.log(
+      logger.info(
         `  ${chalk.dim("[SNAPSHOT]")} refreshed ${files.length} file(s) after reconcile ${chalk.cyan(cycle.id)}`,
       );
       return;
@@ -202,7 +203,7 @@ export function createSnapshotManager({
 
     if (!inScopeFiles.length) return;
     captureFiles(inScopeFiles);
-    console.log(
+    logger.info(
       `  ${chalk.dim("[SNAPSHOT]")} refreshed ${inScopeFiles.length} in-scope file(s) after ${chalk.cyan(cycle.id)}`,
     );
   }

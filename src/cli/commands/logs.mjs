@@ -2,6 +2,7 @@ import { Option } from "commander";
 import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
+import { logger } from "../../logger.mjs";
 
 export function registerLogsCommand(program) {
   const logsCmd = program
@@ -18,10 +19,10 @@ export function registerLogsCommand(program) {
     const runsDir = path.join(process.cwd(), ".harness", "runs");
 
     if (!(await fs.pathExists(runsDir))) {
-      console.log(
+      logger.info(
         chalk.dim("  No runs directory found (.harness/runs/ missing)."),
       );
-      console.log(
+      logger.info(
         chalk.dim('  Start a run first: cortex-harness run "your task"'),
       );
       return;
@@ -33,7 +34,7 @@ export function registerLogsCommand(program) {
       .reverse();
 
     if (!runFiles.length) {
-      console.log(chalk.dim("  No run logs found."));
+      logger.info(chalk.dim("  No run logs found."));
       return;
     }
 
@@ -41,13 +42,13 @@ export function registerLogsCommand(program) {
     if (options.run) {
       targetFile = `${options.run}.jsonl`;
       if (!runFiles.includes(targetFile)) {
-        console.log(chalk.red(`  Run "${options.run}" not found.`));
-        console.log(chalk.dim("  Available runs:"));
+        logger.info(chalk.red(`  Run "${options.run}" not found.`));
+        logger.info(chalk.dim("  Available runs:"));
         for (const f of runFiles.slice(0, 10)) {
-          console.log(chalk.dim(`   ${f.replace(".jsonl", "")}`));
+          logger.info(chalk.dim(`   ${f.replace(".jsonl", "")}`));
         }
         if (runFiles.length > 10)
-          console.log(chalk.dim(`   ... and ${runFiles.length - 10} more`));
+          logger.info(chalk.dim(`   ... and ${runFiles.length - 10} more`));
         process.exit(1);
       }
     } else {
@@ -60,18 +61,18 @@ export function registerLogsCommand(program) {
       .filter(Boolean);
 
     if (!lines.length) {
-      console.log(chalk.dim("  Run log is empty."));
+      logger.info(chalk.dim("  Run log is empty."));
       return;
     }
 
-    console.log(
+    logger.info(
       chalk.bold(
         "\n  Run: ",
         targetFile.replace(".jsonl", ""),
         "  (" + lines.length + " events)",
       ),
     );
-    console.log(
+    logger.info(
       chalk.dim("  ─────────────────────────────────────────────────────────\n"),
     );
 
@@ -86,7 +87,7 @@ export function registerLogsCommand(program) {
 
         if (ev.type === "harness") {
           if (ev.event === "run-start") {
-            console.log(
+            logger.info(
               ts + chalk.green("▶ RUN START  "),
               chalk.dim("task:"),
               ev.task ?? "",
@@ -99,16 +100,16 @@ export function registerLogsCommand(program) {
             ]
               .filter(Boolean)
               .join("  ");
-            console.log(ts + chalk.red("■ RUN END    "), summary);
+            logger.info(ts + chalk.red("■ RUN END    "), summary);
             if (ev.totalSpentUsd !== undefined) {
-              console.log(
+              logger.info(
                 chalk.dim("              spent: $" + ev.totalSpentUsd.toFixed(2)),
               );
             }
           } else if (ev.event === "fatal") {
-            console.log(ts + chalk.red("✗ FATAL     "), ev.error ?? "");
+            logger.info(ts + chalk.red("✗ FATAL     "), ev.error ?? "");
           } else if (ev.event === "cycle-start") {
-            console.log(
+            logger.info(
               ts + chalk.blue("→ CYCLE      "),
               chalk.bold(ev.cycleId ?? ""),
               ev.taskGroup ? chalk.dim("(" + ev.taskGroup + ")") : "",
@@ -116,7 +117,7 @@ export function registerLogsCommand(program) {
           } else if (ev.event === "cycle-result") {
             const ok = ev.cycles ?? ev.delivered ?? 0;
             const fail = ev.blocked ?? 0;
-            console.log(
+            logger.info(
               ts + chalk.green("← CYCLE END "),
               chalk.bold(ev.cycleId ?? ""),
               chalk.green(" ✓" + ok),
@@ -124,18 +125,18 @@ export function registerLogsCommand(program) {
               ev.partial ? chalk.yellow(" ~" + ev.partial) : "",
             );
             if (ev.totalSpentUsd !== undefined) {
-              console.log(
+              logger.info(
                 chalk.dim("              spent: $" + ev.totalSpentUsd.toFixed(2)),
               );
             }
           } else if (ev.event === "rate_limit") {
-            console.log(
+            logger.info(
               ts + chalk.yellow("⚠ RATE LIMIT"),
               ev.service ?? "",
               ev.resetsAt ? "resets " + ev.resetsAt.slice(11, 16) : "",
             );
           } else {
-            console.log(ts + chalk.dim("harness/" + (ev.event ?? "??")));
+            logger.info(ts + chalk.dim("harness/" + (ev.event ?? "??")));
           }
         } else if (ev.type === "agent_message" || ev.type === "message") {
           const role = ev.role ?? ev.agent ?? "?";
@@ -143,12 +144,12 @@ export function registerLogsCommand(program) {
             typeof ev.content === "string"
               ? ev.content
               : JSON.stringify(ev.content ?? "");
-          console.log(
+          logger.info(
             ts + chalk.cyan("◇ " + role.padEnd(10)),
             chalk.dim(content.slice(0, 120)),
           );
         } else if (ev.type === "tool-call" || ev.type === "tool") {
-          console.log(
+          logger.info(
             ts + chalk.magenta("⚙ TOOL CALL "),
             ev.tool ?? ev.function ?? "",
           );
@@ -158,14 +159,14 @@ export function registerLogsCommand(program) {
             typeof ev.result === "string"
               ? ev.result
               : JSON.stringify(ev.result ?? "");
-          console.log(
+          logger.info(
             ts + (ok ? chalk.green("✓ TOOL OK   ") : chalk.red("✗ TOOL FAIL ")),
             chalk.dim(preview.slice(0, 120)),
           );
         } else if (ev.type === "notification-warning") {
-          console.log(ts + chalk.yellow("⚠ NOTIFY WARN"), ev.warning ?? "");
+          logger.info(ts + chalk.yellow("⚠ NOTIFY WARN"), ev.warning ?? "");
         } else if (ev.type === "error") {
-          console.log(
+          logger.info(
             ts + chalk.red("✗ ERROR      "),
             ev.message ?? JSON.stringify(ev),
           );
@@ -181,7 +182,7 @@ export function registerLogsCommand(program) {
               const firstTool =
                 msg.content?.find((b) => b.type === "tool_use")?.name ?? "";
               const preview = firstText || (firstTool ? "tool:" + firstTool : "");
-              console.log(
+              logger.info(
                 ts + chalk.dim("◇ assistant "),
                 chalk.dim(preview.slice(0, 120)),
               );
@@ -196,9 +197,9 @@ export function registerLogsCommand(program) {
                     : JSON.stringify(toolResult.content)
                   ).slice(0, 120)
                 : JSON.stringify(content ?? "").slice(0, 120);
-              console.log(ts + chalk.dim("◇ user      "), chalk.dim(preview));
+              logger.info(ts + chalk.dim("◇ user      "), chalk.dim(preview));
             } else if (raw.type === "system") {
-              console.log(
+              logger.info(
                 ts + chalk.dim("⚙ system    "),
                 chalk.dim(
                   (raw.subtype ?? "") +
@@ -210,23 +211,23 @@ export function registerLogsCommand(program) {
                 raw.cost_usd !== undefined
                   ? " $" + Number(raw.cost_usd).toFixed(3)
                   : "";
-              console.log(
+              logger.info(
                 ts + chalk.dim("■ result    "),
                 chalk.dim((raw.subtype ?? "") + spent),
               );
             } else if (raw.type === "rate_limit_event") {
-              console.log(
+              logger.info(
                 ts + chalk.yellow("⚠ rate limit"),
                 chalk.dim(raw.rate_limit_info?.status ?? ""),
               );
             } else {
-              console.log(
+              logger.info(
                 ts + chalk.dim("○ " + rawType.padEnd(10)),
                 chalk.dim(JSON.stringify(raw).slice(0, 120)),
               );
             }
           } catch {
-            console.log(
+            logger.info(
               ts + chalk.dim("○ raw       "),
               chalk.dim(String(ev.raw).slice(0, 120)),
             );
@@ -243,7 +244,7 @@ export function registerLogsCommand(program) {
                 (typeof v === "string" ? v : JSON.stringify(v).slice(0, 60)),
             )
             .join(" | ");
-          console.log(
+          logger.info(
             ts +
               chalk.dim(
                 "? " + (ev.type ?? "unknown") + " | " + summary.slice(0, 120),
@@ -256,7 +257,7 @@ export function registerLogsCommand(program) {
       }
     }
 
-    console.log(
+    logger.info(
       chalk.dim(
         "\n  (" +
           count +

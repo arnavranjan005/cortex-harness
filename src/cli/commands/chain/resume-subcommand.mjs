@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
+import { logger } from "../../../logger.mjs";
 import {
   findLatestDelivery,
   findResidualRisksSection,
@@ -20,7 +21,7 @@ import { readBlockedTypes } from "./blocked-state.mjs";
  * @param {object} chainCmd  - commander Command for `chain`
  * @param {object} ctx
  * @param {string} ctx.pkgRoot       - cortex-harness package root
- * @param {Function} ctx.buildChainTask - (markdown) => string | null
+ * @param {Function} ctx.buildChainTask - (markdown) => Promise<import('../../helpers/chain-task.mjs').ChainDecision>
  */
 export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTask }) {
   chainCmd
@@ -41,8 +42,8 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
 
       const queueFile = path.join(cwd, ".harness", "task-queue.json");
       if (!fs.existsSync(queueFile)) {
-        console.error(chalk.red("  [ERROR] No task-queue.json found. Nothing to resume."));
-        console.error(chalk.dim('  Start a run first: cortex-harness run "your task"'));
+        logger.error(chalk.red("  [ERROR] No task-queue.json found. Nothing to resume."));
+        logger.error(chalk.dim('  Start a run first: cortex-harness run "your task"'));
         process.exit(1);
       }
 
@@ -50,7 +51,7 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
       try {
         cycles = JSON.parse(fs.readFileSync(queueFile, "utf8")).cycles ?? [];
       } catch {
-        console.error(chalk.red("  [ERROR] Could not parse task-queue.json."));
+        logger.error(chalk.red("  [ERROR] Could not parse task-queue.json."));
         process.exit(1);
       }
 
@@ -58,8 +59,8 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
       const pending = cycles.filter((c) => c.status === "pending");
 
       if (!blocked.length && !pending.length) {
-        console.error(chalk.red("  [ERROR] No pending or blocked cycles in task-queue.json."));
-        console.error(chalk.dim("  Use: cortex-harness chain [task] to start a new chain."));
+        logger.error(chalk.red("  [ERROR] No pending or blocked cycles in task-queue.json."));
+        logger.error(chalk.dim("  Use: cortex-harness chain [task] to start a new chain."));
         process.exit(1);
       }
 
@@ -67,19 +68,19 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
       const hasSessionLimit = blocked.some((c) => c.blockedType === "session-limit");
       const hasPending = pending.length > 0;
 
-      console.log(chalk.bold.cyan("\n  cortex-harness chain resume"));
-      console.log(chalk.dim(`  Max runs: ${maxRuns}  |  Global budget: $${globalBudget}`));
+      logger.info(chalk.bold.cyan("\n  cortex-harness chain resume"));
+      logger.info(chalk.dim(`  Max runs: ${maxRuns}  |  Global budget: $${globalBudget}`));
       if (hasHumanInput)
-        console.log(
+        logger.info(
           chalk.yellow(`  ${blocked.filter((c) => c.blockedType === "needs-human-input").length} cycle(s) need your input`),
         );
       if (hasSessionLimit)
-        console.log(
+        logger.info(
           chalk.dim(`  ${blocked.filter((c) => c.blockedType === "session-limit").length} session-limit cycle(s) will auto-retry`),
         );
       if (hasPending && !blocked.length)
-        console.log(chalk.dim(`  ${pending.length} pending cycle(s) — resuming queue directly`));
-      console.log(chalk.dim("─".repeat(60)));
+        logger.info(chalk.dim(`  ${pending.length} pending cycle(s) — resuming queue directly`));
+      logger.info(chalk.dim("─".repeat(60)));
 
       const deliveryBeforeResume = await findLatestDelivery(cwd);
 
@@ -91,30 +92,30 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
         // Handle blocked cycles first (human-input or session-limit)
         const resumeResult = await resumeBlockedCycles(cwd);
         if (resumeResult === "nothing-blocked") {
-          console.error(chalk.red("  [ERROR] No blocked cycles found — unexpected state."));
+          logger.error(chalk.red("  [ERROR] No blocked cycles found — unexpected state."));
           process.exit(1);
         }
-        console.log(chalk.dim("\n  Resuming blocked run (state preserved)...\n"));
+        logger.info(chalk.dim("\n  Resuming blocked run (state preserved)...\n"));
       } else {
-        console.log(chalk.dim("\n  Resuming pending queue (state preserved)...\n"));
+        logger.info(chalk.dim("\n  Resuming pending queue (state preserved)...\n"));
       }
 
       resumeExitCode = await spawnResumedRun(cwd, pkgRoot);
       const resumeSpent = await readRunEndSpend(runsDir);
       globalSpent += resumeSpent;
 
-      console.log(
+      logger.info(
         chalk.dim(`\n  Resumed run complete. Exit: ${resumeExitCode} | this run: $${resumeSpent.toFixed(2)} | total: $${globalSpent.toFixed(2)}`),
       );
 
       if (resumeExitCode !== 0) {
-        console.log(chalk.red(`  Resumed run exited with code ${resumeExitCode}. Stopping.`));
+        logger.info(chalk.red(`  Resumed run exited with code ${resumeExitCode}. Stopping.`));
         process.exit(resumeExitCode);
       }
 
       let deliveryPath = await findLatestDelivery(cwd);
       if (!deliveryPath || deliveryPath === deliveryBeforeResume) {
-        console.log(chalk.yellow("  Resumed run did not produce a delivery. Cannot continue chain."));
+        logger.info(chalk.yellow("  Resumed run did not produce a delivery. Cannot continue chain."));
         process.exit(1);
       }
 
@@ -127,34 +128,39 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
 
         const rawSection = findResidualRisksSection(markdown);
         if (rawSection?.includes("NEEDS_HUMAN_INPUT")) {
-          console.log(
+          logger.info(
             chalk.yellow("\n  NEEDS_HUMAN_INPUT in residual risks. Stopping chain — human input required."),
           );
-          console.log(chalk.dim("  Run: cortex-harness chain resume"));
+          logger.info(chalk.dim("  Run: cortex-harness chain resume"));
           break;
         }
 
-        console.log(chalk.dim("\n  Asking LLM whether chaining is needed..."));
-        const nextTask = await buildChainTask(markdown);
+        logger.info(chalk.dim("\n  Asking LLM whether chaining is needed..."));
+        const decision = await buildChainTask(markdown);
+        if (decision.failed) {
+          logger.info(chalk.yellow("\n  Could not determine whether chaining is needed (provider call failed) — stopping without assuming the delivery is clean."));
+          break;
+        }
+        const nextTask = decision.task;
         if (!nextTask) {
-          console.log(chalk.green("\n  No actionable residual risks remain. Chain complete."));
+          logger.info(chalk.green("\n  No actionable residual risks remain. Chain complete."));
           break;
         }
 
         if (runNumber >= maxRuns) {
-          console.log(chalk.yellow(`\n  Max runs (${maxRuns}) reached. Residual work remains:`));
-          console.log(chalk.dim(`    ${nextTask.split("\n")[0].slice(0, 120)}`));
+          logger.info(chalk.yellow(`\n  Max runs (${maxRuns}) reached. Residual work remains:`));
+          logger.info(chalk.dim(`    ${nextTask.split("\n")[0].slice(0, 120)}`));
           break;
         }
 
         const remainingBudget = globalBudget - globalSpent;
         if (remainingBudget <= 0) {
-          console.log(chalk.red("  Global budget exhausted. Stopping chain."));
+          logger.info(chalk.red("  Global budget exhausted. Stopping chain."));
           break;
         }
 
         runNumber++;
-        console.log(
+        logger.info(
           chalk.bold(`\n  ══ Chain run ${runNumber}/${maxRuns}  ($${globalSpent.toFixed(2)} / $${globalBudget} spent) ══\n`),
         );
 
@@ -164,48 +170,48 @@ export function registerChainResumeSubcommand(chainCmd, { pkgRoot, buildChainTas
 
         let runExitCode;
         if (midBlocked.hasSessionLimit) {
-          console.log(chalk.red("  Run hit session limit. Stopping chain — limit has not reset yet."));
-          if (midBlocked.sessionLimitReason) console.log(chalk.dim(`  ${midBlocked.sessionLimitReason}`));
-          console.log(chalk.dim("  Run: cortex-harness chain resume  (after your limit resets)"));
+          logger.info(chalk.red("  Run hit session limit. Stopping chain — limit has not reset yet."));
+          if (midBlocked.sessionLimitReason) logger.info(chalk.dim(`  ${midBlocked.sessionLimitReason}`));
+          logger.info(chalk.dim("  Run: cortex-harness chain resume  (after your limit resets)"));
           break;
         } else if (midBlocked.hasHumanInput) {
-          console.log(chalk.yellow("  Human input required — collecting answers...\n"));
+          logger.info(chalk.yellow("  Human input required — collecting answers...\n"));
           await resumeBlockedCycles(cwd);
           runExitCode = await spawnResumedRun(cwd, pkgRoot);
         } else {
-          console.log(chalk.dim("  Clearing state for fresh run..."));
+          logger.info(chalk.dim("  Clearing state for fresh run..."));
           await clearHarnessState(cwd);
           runExitCode = await spawnRun(currentTask, cwd, pkgRoot);
         }
 
         const runSpent = await readRunEndSpend(runsDir);
         globalSpent += runSpent;
-        console.log(
+        logger.info(
           chalk.dim(`\n  Run ${runNumber} complete. Exit: ${runExitCode} | this run: $${runSpent.toFixed(2)} | total: $${globalSpent.toFixed(2)}`),
         );
 
         if (runExitCode !== 0) {
-          console.log(chalk.red(`  Run exited with code ${runExitCode}. Stopping chain.`));
+          logger.info(chalk.red(`  Run exited with code ${runExitCode}. Stopping chain.`));
           break;
         }
 
         if (globalSpent >= globalBudget) {
-          console.log(chalk.red(`  Global budget cap reached ($${globalSpent.toFixed(2)} >= $${globalBudget}). Stopping.`));
+          logger.info(chalk.red(`  Global budget cap reached ($${globalSpent.toFixed(2)} >= $${globalBudget}). Stopping.`));
           break;
         }
 
         deliveryPath = await findLatestDelivery(cwd);
         if (!deliveryPath || deliveryPath === deliveryBeforeRun) {
-          console.log(chalk.yellow("  Run did not produce a new delivery (blocked or aborted). Stopping chain."));
-          console.log(chalk.dim("  Run: cortex-harness chain resume"));
+          logger.info(chalk.yellow("  Run did not produce a new delivery (blocked or aborted). Stopping chain."));
+          logger.info(chalk.dim("  Run: cortex-harness chain resume"));
           break;
         }
       }
 
-      console.log(chalk.bold.blue("\n━━━ Chain Resume Summary ━━━━━━━━━━━━━━━━━━━━━━━━━"));
-      console.log(`${chalk.dim("Runs completed:")} ${runNumber}`);
-      console.log(`${chalk.dim("Global spend  :")} $${globalSpent.toFixed(2)} / $${globalBudget}`);
-      console.log(chalk.bold.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"));
+      logger.info(chalk.bold.blue("\n━━━ Chain Resume Summary ━━━━━━━━━━━━━━━━━━━━━━━━━"));
+      logger.info(`${chalk.dim("Runs completed:")} ${runNumber}`);
+      logger.info(`${chalk.dim("Global spend  :")} $${globalSpent.toFixed(2)} / $${globalBudget}`);
+      logger.info(chalk.bold.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"));
 
       process.exit(0);
     });

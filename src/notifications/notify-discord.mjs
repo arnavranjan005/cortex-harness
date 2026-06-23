@@ -1,3 +1,4 @@
+import { logger } from "../logger.mjs";
 function parseArgs(argv) {
   const parsed = {};
 
@@ -118,7 +119,7 @@ const _isMain =
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (_isMain) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
 }

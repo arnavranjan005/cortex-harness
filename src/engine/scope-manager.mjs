@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { execSync } from "child_process";
 import { writeFileSync, existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
+import { logger } from "../logger.mjs";
 
 // Infer the top-level scope path from a file path using Nx layout conventions.
 function inferScopePath(normalizedFilePath) {
@@ -81,7 +82,7 @@ export function createScopeManager({
 
     if (!violations.length) return;
 
-    console.log(
+    logger.info(
       `\n  ${chalk.red("[SCOPE]")} ${chalk.cyan(cycle.id)} touched ${violations.length} out-of-scope file(s) — reverting:`,
     );
     const reverted = [];
@@ -121,12 +122,12 @@ export function createScopeManager({
 
       if (done) {
         const restored = restoreFromSnapshot(f);
-        console.log(
+        logger.info(
           `    ${chalk.green("✗")} reverted: ${chalk.dim(f)}${restored ? chalk.dim(" (pre-run content restored from snapshot)") : ""}`,
         );
         reverted.push(f);
       } else {
-        console.log(`    ${chalk.red("!")} could not revert: ${chalk.red(f)}`);
+        logger.info(`    ${chalk.red("!")} could not revert: ${chalk.red(f)}`);
         failed.push(f);
       }
     }
@@ -224,12 +225,12 @@ export function createScopeManager({
 
     try {
       writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
-      console.log(
+      logger.info(
         `\n  ${chalk.yellow("[SCOPE]")} Auto-updated scopes from unconstrained cycle ${chalk.cyan(cycle.id)}:`,
       );
       for (const [agent, paths] of Object.entries(updates)) {
         paths.forEach((p) =>
-          console.log(`    ${chalk.green("+")} ${p}  →  ${chalk.dim(agent)}`),
+          logger.info(`    ${chalk.green("+")} ${p}  →  ${chalk.dim(agent)}`),
         );
       }
       appendLog({
@@ -240,7 +241,7 @@ export function createScopeManager({
         updates,
       });
     } catch (err) {
-      console.warn(`  [SCOPE] Could not update harness.config.json: ${err.message}`);
+      logger.warn(`  [SCOPE] Could not update harness.config.json: ${err.message}`);
     }
   }
 

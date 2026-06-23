@@ -2,6 +2,7 @@ import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
 import { text } from "../ui.mjs";
+import { logger } from "../../../logger.mjs";
 
 // Collect human answers for blocked cycles and mark them pending.
 // Does NOT spawn the engine — caller decides what to do next.
@@ -31,14 +32,14 @@ export async function resumeBlockedCycles(cwd) {
       delete c.blockedAt;
     }
     fs.writeFileSync(queueFile, JSON.stringify(queue, null, 2), "utf8");
-    console.log(chalk.dim(`  Marked ${blocked.length} session-limit cycle(s) for retry.`));
+    logger.info(chalk.dim(`  Marked ${blocked.length} session-limit cycle(s) for retry.`));
     return "session-limit-only";
   }
 
   const TERM_WIDTH = Math.min(process.stdout.columns || 80, 100);
   const SEP = chalk.dim("─".repeat(TERM_WIDTH - 2));
 
-  console.log(
+  logger.info(
     "\n" +
       chalk.bold.cyan(
         `  ${needsInput.length} cycle${needsInput.length > 1 ? "s" : ""} waiting for your input\n`,
@@ -52,8 +53,8 @@ export async function resumeBlockedCycles(cwd) {
 
   for (let i = 0; i < needsInput.length; i++) {
     const c = needsInput[i];
-    console.log(SEP);
-    console.log(
+    logger.info(SEP);
+    logger.info(
       `\n  ${chalk.bold(`[${i + 1}/${needsInput.length}]`)} ${chalk.cyan(c.id)}  ${chalk.dim(`(${c.type})`)}\n`,
     );
 
@@ -78,16 +79,16 @@ export async function resumeBlockedCycles(cwd) {
             });
 
             if (stillStale.length > 0) {
-              console.log(chalk.yellow(`  ⚠ Auth session expired for profile(s): ${stillStale.join(", ")}`));
+              logger.info(chalk.yellow(`  ⚠ Auth session expired for profile(s): ${stillStale.join(", ")}`));
               for (const name of stillStale) {
-                console.log(chalk.cyan(`    cortex-harness auth --profile ${name}`));
+                logger.info(chalk.cyan(`    cortex-harness auth --profile ${name}`));
               }
-              console.log(chalk.dim("  Re-run the command(s) above, then run `cortex-harness resume` again."));
+              logger.info(chalk.dim("  Re-run the command(s) above, then run `cortex-harness resume` again."));
               preconditionFailed.push(c);
               continue;
             }
 
-            console.log(chalk.green(`  ✓ Auth profiles refreshed (${staleProfiles.join(", ")}) — re-queuing.`));
+            logger.info(chalk.green(`  ✓ Auth profiles refreshed (${staleProfiles.join(", ")}) — re-queuing.`));
             decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
             continue;
           }
@@ -98,12 +99,12 @@ export async function resumeBlockedCycles(cwd) {
           if (isSingleProfile) {
             const authFile = path.join(cwd, ".harness", "smoke-auth.json");
             if (!fs.existsSync(authFile)) {
-              console.log(chalk.red("  ✗ smoke-auth.json not found."));
-              console.log(chalk.yellow(`  Run ${chalk.bold("cortex-harness auth")} first, then run resume again.`));
+              logger.info(chalk.red("  ✗ smoke-auth.json not found."));
+              logger.info(chalk.yellow(`  Run ${chalk.bold("cortex-harness auth")} first, then run resume again.`));
               preconditionFailed.push(c);
               continue;
             }
-            console.log(chalk.green("  ✓ smoke-auth.json found — re-queuing."));
+            logger.info(chalk.green("  ✓ smoke-auth.json found — re-queuing."));
             decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
             continue;
           }
@@ -114,16 +115,16 @@ export async function resumeBlockedCycles(cwd) {
           });
 
           if (stillMissing.length > 0) {
-            console.log(chalk.red(`  ✗ Missing auth state for: ${stillMissing.join(", ")}`));
+            logger.info(chalk.red(`  ✗ Missing auth state for: ${stillMissing.join(", ")}`));
             for (const name of stillMissing) {
-              console.log(chalk.yellow(`  Run ${chalk.bold(`cortex-harness auth --profile ${name}`)}`));
+              logger.info(chalk.yellow(`  Run ${chalk.bold(`cortex-harness auth --profile ${name}`)}`));
             }
-            console.log(chalk.yellow("  Then run `cortex-harness resume` again."));
+            logger.info(chalk.yellow("  Then run `cortex-harness resume` again."));
             preconditionFailed.push(c);
             continue;
           }
 
-          console.log(chalk.green(`  ✓ All auth profiles present (${missingProfiles.join(", ")}) — re-queuing.`));
+          logger.info(chalk.green(`  ✓ All auth profiles present (${missingProfiles.join(", ")}) — re-queuing.`));
           decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
           continue;
         }
@@ -157,27 +158,27 @@ export async function resumeBlockedCycles(cwd) {
       const indent = "  ";
       const maxLen = TERM_WIDTH - indent.length;
       for (const line of questionText.split("\n")) {
-        if (line.trim() === "") { console.log(); continue; }
+        if (line.trim() === "") { logger.info(); continue; }
         const words = line.split(" ");
         let current = "";
         for (const word of words) {
           if (!current) { current = word; continue; }
           if (current.length + 1 + word.length <= maxLen) current += " " + word;
-          else { console.log(indent + current); current = word; }
+          else { logger.info(indent + current); current = word; }
         }
-        if (current) console.log(indent + current);
+        if (current) logger.info(indent + current);
       }
     } else {
-      console.log(chalk.dim("  (no question text recorded)"));
+      logger.info(chalk.dim("  (no question text recorded)"));
     }
 
-    console.log();
+    logger.info();
     const answer = await text({
       message: "Your answer",
       placeholder: "Type your response, then Enter",
     });
     const userAnswer = (answer ?? "").trim();
-    console.log();
+    logger.info();
 
     decisions.push({
       cycleId: c.id,
@@ -192,9 +193,9 @@ export async function resumeBlockedCycles(cwd) {
   );
 
   if (!readyToResume.length && preconditionFailed.length) {
-    console.log(SEP);
-    console.log(chalk.yellow(`\n  ${preconditionFailed.length} cycle(s) still blocked — preconditions not met.`));
-    console.log(chalk.dim("  Resolve the issues above, then run `cortex-harness resume` again."));
+    logger.info(SEP);
+    logger.info(chalk.yellow(`\n  ${preconditionFailed.length} cycle(s) still blocked — preconditions not met.`));
+    logger.info(chalk.dim("  Resolve the issues above, then run `cortex-harness resume` again."));
     return "nothing-blocked"; // caller will not start the run
   }
 
@@ -217,12 +218,12 @@ export async function resumeBlockedCycles(cwd) {
   fs.writeFileSync(queueFile, JSON.stringify(queue, null, 2), "utf8");
 
   const resumedCount = readyToResume.length;
-  console.log(chalk.green(`  Answers saved. Marked ${resumedCount} cycle(s) for retry.`));
+  logger.info(chalk.green(`  Answers saved. Marked ${resumedCount} cycle(s) for retry.`));
   if (preconditionFailed.length) {
-    console.log(chalk.yellow("  " + preconditionFailed.length + " cycle(s) still blocked — run `cortex-harness resume` again after resolving."));
+    logger.info(chalk.yellow("  " + preconditionFailed.length + " cycle(s) still blocked — run `cortex-harness resume` again after resolving."));
   }
   if (sessionLimit.length && readyToResume.some((c) => c.blockedType === "session-limit")) {
-    console.log(
+    logger.info(
       chalk.yellow(`\n  Session-limit cycle(s) will also retry — no answer needed.`),
     );
   }

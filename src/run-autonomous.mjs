@@ -1,3 +1,4 @@
+import { logger } from "./logger.mjs";
 /**
  * Autonomous multi-cycle runner for Cortex Harness.
  * Configuration-driven: reads harness.config.json for paths, agent scopes, and commands.
@@ -10,7 +11,6 @@ import chalk from "chalk";
 import { appendFileSync, mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "fs";
 import { join, relative } from "path";
 import { spawn as _spawn } from "child_process";
-import { CLAUDE_EXE } from "./engine/claude-exe.mjs";
 import {
   validateCycleOutput,
   validateTaskQueue,
@@ -26,6 +26,10 @@ import { createScopeManager } from "./engine/scope-manager.mjs";
 import { createQueueManager } from "./engine/queue-manager.mjs";
 import { createPromptBuilder } from "./engine/prompt-builder.mjs";
 import { createCycleRunner } from "./engine/cycle-runner.mjs";
+import { CYCLE_SIGNAL, isRetryable } from "./engine/cycle-signal.mjs";
+import { resolveAdapter, isProviderInstalled, DEFAULT_CLI_PROVIDER } from "./engine/cli-adapters/registry.mjs";
+import { normalizeAdapterOutput } from "./engine/cli-adapters/output-normalize.mjs";
+import { parseLenientJson } from "./engine/cli-adapters/lenient-json.mjs";
 import { createSmokeOrchestrator } from "./engine/smoke-orchestrator.mjs";
 import { mergeProbeUrls } from "./engine/probe-urls.mjs";
 import { scanAllRoutes, deriveFrontendRoot, detectFramework, buildDynamicUrlOverrides } from "./engine/route-scanner.mjs";
@@ -38,6 +42,8 @@ const {
   harnessDir: HARNESS_DIR,
   promptsDir: PROMPTS_DIR,
   agentsDir: AGENTS_DIR,
+  promptsOverrideDir: PROMPTS_OVERRIDE_DIR,
+  agentsOverrideDir: AGENTS_OVERRIDE_DIR,
   cwd: ROOT,
   agents: CONFIGURED_AGENTS,
 } = config;
@@ -64,14 +70,14 @@ if (!userTask) {
     const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
     if (existingQueue?.task) {
       userTask = existingQueue.task;
-      console.log(`${chalk.dim("[resume]")} Using task from task-queue.json: ${userTask}`);
+      logger.info(`${chalk.dim("[resume]")} Using task from task-queue.json: ${userTask}`);
     }
   } catch { /* no queue yet */ }
 } else {
   try {
     const existingQueue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
     if (existingQueue?.task && existingQueue.task !== cliTask) {
-      console.log(
+      logger.info(
         `${chalk.dim("[new-task]")} Task differs from task-queue.json — clearing old state for fresh run.`,
       );
       unlinkSync(QUEUE_FILE);
@@ -88,7 +94,7 @@ if (!userTask) {
 }
 
 if (!userTask) {
-  console.error('Usage: cortex-harness run "your task description"');
+  logger.error('Usage: cortex-harness run "your task description"');
   process.exit(1);
 }
 
@@ -125,7 +131,7 @@ function notify(title, message, meta = {}) {
     message,
     meta: { task: userTask, totalSpentUsd: Number(spendRef.value.toFixed(2)), ...meta },
     onWarning: (warning) => {
-      console.warn(warning);
+      logger.warn(warning);
       appendLog({ type: "notification-warning", warning });
     },
   });
@@ -212,6 +218,8 @@ const { readQueue, writeQueue, printPendingQueue, nextCycleBatch, injectAddition
 const { buildCyclePrompt } = createPromptBuilder({
   PROMPTS_DIR,
   AGENTS_DIR,
+  PROMPTS_OVERRIDE_DIR,
+  AGENTS_OVERRIDE_DIR,
   CYCLE_DIR,
   CYCLE_STATE_RELDIR,
   SNAPSHOT_RELDIR,
@@ -220,6 +228,9 @@ const { buildCyclePrompt } = createPromptBuilder({
   readCycleState,
   readQueue,
 });
+
+const cliProvider = config.cliProvider ?? DEFAULT_CLI_PROVIDER;
+const adapter = resolveAdapter(cliProvider);
 
 const { runCycle, runCycleBatch, getEffectiveMaxRetries } = createCycleRunner({
   ROOT,
@@ -234,18 +245,19 @@ const { runCycle, runCycleBatch, getEffectiveMaxRetries } = createCycleRunner({
   buildCyclePrompt,
   appendLog,
   notify,
+  adapter,
 });
 
 const { runSmokeOrchestration } = createSmokeOrchestrator({
   ROOT, HARNESS_DIR, CYCLE_DIR, RUNS_DIR,
-  config, CLAUDE_EXE, appendLog,
+  config, adapter, appendLog,
   buildFilteredMcpServers: (agentName) => buildFilteredMcpServers(agentName, { config, ROOT }),
 });
 
 // ── Pre-smoke step ────────────────────────────────────────────────────────────
 
 async function runPreSmokeStep() {
-  console.log(chalk.dim("[PRE-SMOKE] Detecting changed URLs..."));
+  logger.info(chalk.dim("[PRE-SMOKE] Detecting changed URLs..."));
 
   // 1. Read snapshot.json → extract changed file paths
   const snapshotFile = join(SNAPSHOT_DIR, "snapshot.json");
@@ -271,7 +283,7 @@ async function runPreSmokeStep() {
       .replace(/\{\{FRONTEND_ROOT\}\}/g, frontendRoot)
       .replace(/\{\{FRAMEWORK\}\}/g, detectedFramework);
   } catch {
-    console.log(chalk.yellow("[PRE-SMOKE] url-detector.md template not found — skipping URL detection"));
+    logger.info(chalk.yellow("[PRE-SMOKE] url-detector.md template not found — skipping URL detection"));
     writeFileSync(join(CYCLE_DIR, "probe-urls.json"), JSON.stringify({ urls: [], layoutAffected: false, framework: "unknown" }, null, 2), "utf8");
     return;
   }
@@ -289,6 +301,13 @@ async function runPreSmokeStep() {
   const isWindows = process.platform === "win32";
 
   let stdoutBuf = "";
+  let rawStdout = "";
+
+  const promptFile = join(RUNS_DIR, `url-detector-prompt-${Date.now()}.txt`);
+  writeFileSync(promptFile, promptText, "utf8");
+  const detectorPlan = adapter.buildSummarySpawnPlan({
+    prompt: promptText, budgetUsd: 0.05, promptFile, isWindows, maxTurns: 10, allowedToolPatterns: ["Read"],
+  });
 
   await new Promise((resolve) => {
     let proc;
@@ -298,29 +317,19 @@ async function runPreSmokeStep() {
     }, 120_000);
 
     if (isWindows) {
-      const promptFile = join(RUNS_DIR, `url-detector-prompt-${Date.now()}.txt`);
       const psFile = join(RUNS_DIR, `url-detector-${Date.now()}.ps1`);
-      writeFileSync(promptFile, promptText, "utf8");
-      writeFileSync(
-        psFile,
-        `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --allowedTools "Read" --output-format text --max-turns 10 --max-budget-usd 0.05 --dangerously-skip-permissions\n`,
-        "utf8",
-      );
+      writeFileSync(psFile, detectorPlan.psContent, "utf8");
       proc = _spawn(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", psFile],
+        detectorPlan.command,
+        detectorPlan.args.map((a) => (a === "__PS_FILE__" ? psFile : a)),
         { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
     } else {
-      proc = _spawn(
-        CLAUDE_EXE,
-        ["-p", promptText, "--allowedTools", "Read", "--output-format", "text", "--max-turns", "10", "--max-budget-usd", "0.05", "--dangerously-skip-permissions"],
-        { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
-      );
+      proc = _spawn(detectorPlan.command, detectorPlan.args, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
     }
 
-    proc.stdout.on("data", (chunk) => { stdoutBuf += chunk.toString("utf8"); });
-    proc.on("close", () => { clearTimeout(timeout); resolve(); });
+    proc.stdout.on("data", (chunk) => { rawStdout += chunk.toString("utf8"); });
+    proc.on("close", () => { clearTimeout(timeout); stdoutBuf = normalizeAdapterOutput(adapter, rawStdout, detectorPlan.outputFormat); resolve(); });
     proc.on("error", () => { clearTimeout(timeout); resolve(); });
   });
 
@@ -332,7 +341,7 @@ async function runPreSmokeStep() {
     const jsonMatch = stdoutBuf.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
-        const parsed = JSON.parse(jsonMatch[0]);
+        const parsed = parseLenientJson(jsonMatch[0]);
         if (typeof parsed.framework === "string" && Array.isArray(parsed.urls)) {
           const overrides = buildDynamicUrlOverrides(changedFiles, frontendRoot, parsed.framework, routeParams);
           const urls = [];
@@ -350,21 +359,21 @@ async function runPreSmokeStep() {
             JSON.stringify({ urls, dynamicUrls, layoutAffected: parsed.layoutAffected === true, framework: parsed.framework }, null, 2),
             "utf8",
           );
-          console.log(chalk.dim("[PRE-SMOKE] URL detector output captured from stdout"));
+          logger.info(chalk.dim("[PRE-SMOKE] URL detector output captured from stdout"));
         }
       } catch { /* malformed — fall through */ }
     }
   }
 
   if (!existsSync(probeUrlsOut)) {
-    console.log(chalk.yellow("[PRE-SMOKE] URL detector produced no output — falling back to filesystem scan"));
+    logger.info(chalk.yellow("[PRE-SMOKE] URL detector produced no output — falling back to filesystem scan"));
     const FILE_BASED_FW = new Set(["nextjs-app-router", "nextjs-pages-router", "nuxt", "sveltekit"]);
     const fallback = FILE_BASED_FW.has(detectedFramework)
       ? scanAllRoutes(ROOT, frontendRoot, detectedFramework, routeParams)
       : { urls: [], dynamicUrls: [] };
     writeFileSync(probeUrlsOut, JSON.stringify({ urls: fallback.urls, dynamicUrls: fallback.dynamicUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
     if (fallback.urls.length) {
-      console.log(chalk.dim(`[PRE-SMOKE] ${fallback.urls.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+      logger.info(chalk.dim(`[PRE-SMOKE] ${fallback.urls.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
     }
   }
 
@@ -406,13 +415,13 @@ async function runPreSmokeStep() {
       if ((probe.urls ?? []).length) parts.push(`${(probe.urls ?? []).length} detected`);
       if (appended.length) parts.push(`+${appended.length} from smokeUrls`);
       if (scannedCount) parts.push(`+${scannedCount} scanned (layoutAffected)`);
-      console.log(chalk.dim(`[PRE-SMOKE] ${currentUrls.length} URL(s) via ${framework} (${parts.join(", ")}) → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+      logger.info(chalk.dim(`[PRE-SMOKE] ${currentUrls.length} URL(s) via ${framework} (${parts.join(", ")}) → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
     } else {
-      console.log(chalk.yellow(`[PRE-SMOKE] No URLs to probe (framework: ${framework}) — add routes to smokeUrls[] in harness.config.json`));
+      logger.info(chalk.yellow(`[PRE-SMOKE] No URLs to probe (framework: ${framework}) — add routes to smokeUrls[] in harness.config.json`));
     }
   } catch (err) {
     // Log the real error for debugging
-    console.log(chalk.yellow(`[PRE-SMOKE] route merge failed (${err?.message ?? String(err)}) — falling back to filesystem scan`));
+    logger.info(chalk.yellow(`[PRE-SMOKE] route merge failed (${err?.message ?? String(err)}) — falling back to filesystem scan`));
     try {
       const fallback = FILE_BASED_FRAMEWORKS.has(detectedFramework)
         ? scanAllRoutes(ROOT, frontendRoot, detectedFramework, routeParams)
@@ -420,9 +429,9 @@ async function runPreSmokeStep() {
       const merged = mergeProbeUrls(fallback.urls, configSmokeUrls).merged;
       if (merged.length) {
         writeFileSync(probeUrlsOut, JSON.stringify({ urls: merged, dynamicUrls: fallback.dynamicUrls, layoutAffected: false, framework: detectedFramework }, null, 2), "utf8");
-        console.log(chalk.dim(`[PRE-SMOKE] ${merged.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
+        logger.info(chalk.dim(`[PRE-SMOKE] ${merged.length} URL(s) via filesystem scan → ${CYCLE_STATE_RELDIR}/probe-urls.json`));
       } else {
-        console.log(chalk.yellow(`[PRE-SMOKE] No URLs to probe — add routes to smokeUrls[] in harness.config.json`));
+        logger.info(chalk.yellow(`[PRE-SMOKE] No URLs to probe — add routes to smokeUrls[] in harness.config.json`));
       }
     } catch { /* filesystem scan also failed */ }
   }
@@ -433,18 +442,22 @@ async function runPreSmokeStep() {
 async function main() {
   const runStart = Date.now();
 
-  console.log("");
-  console.log(chalk.bold.blue("━━━ Autonomous Multi-Cycle Run ━━━━━━━━━━━━━━━━━━"));
-  console.log(`${chalk.dim("Task   :")} ${userTask}`);
-  console.log(`${chalk.dim("Budget :")} $${MAX_BUDGET_USD} total`);
-  console.log(`${chalk.dim("Log    :")} ${runLogFile}`);
+  logger.info("");
+  logger.info(chalk.bold.blue("━━━ Autonomous Multi-Cycle Run ━━━━━━━━━━━━━━━━━━"));
+  logger.info(`${chalk.dim("Task   :")} ${userTask}`);
+  logger.info(`${chalk.dim("CLI    :")} ${cliProvider}${cliProvider === DEFAULT_CLI_PROVIDER ? "" : chalk.dim(" (non-default)")}`);
+  if (!isProviderInstalled(cliProvider)) {
+    logger.info(chalk.yellow(`  [WARN] "${cliProvider}" CLI not found on PATH — cycles will likely fail to spawn. Run "cortex-harness config" to switch backends.`));
+  }
+  logger.info(`${chalk.dim("Budget :")} $${MAX_BUDGET_USD} total`);
+  logger.info(`${chalk.dim("Log    :")} ${runLogFile}`);
   const { readNotificationConfig: _readNC } = await import("./notification-config.mjs");
   if (!_readNC().exists) {
-    console.log(chalk.dim("  Notifications off — run `cortex-harness notify-setup` to enable"));
+    logger.info(chalk.dim("  Notifications off — run `cortex-harness notify-setup` to enable"));
   }
-  console.log(chalk.dim("─────────────────────────────────────────────────"));
+  logger.info(chalk.dim("─────────────────────────────────────────────────"));
 
-  appendLog({ type: "harness", event: "run-start", task: userTask, timestamp: new Date().toISOString() });
+  appendLog({ type: "harness", event: "run-start", task: userTask, cliProvider, timestamp: new Date().toISOString() });
   notify("Claude — Run Started", userTask.slice(0, 120), { event: "run-start" });
 
   // ── Phase 1: Orchestrate ────────────────────────────────────────────────────
@@ -452,7 +465,7 @@ async function main() {
   let queue = readQueue();
 
   if (!queue) {
-    console.log(`\n${chalk.bold("[orchestrate]")} Planning cycles...`);
+    logger.info(`\n${chalk.bold("[orchestrate]")} Planning cycles...`);
     process.stdout.write("Progress : ");
 
     const orchCycle = { id: "orchestrate", type: "orchestrate", status: "pending" };
@@ -463,46 +476,46 @@ async function main() {
     const orchResult = await runCycle(orchCycle, MAX_BUDGET_USD - spendRef.value);
     appendLog({ type: "cycle-result", cycleId: "orchestrate", ...orchResult });
 
-    if (orchResult.signal === "complete") {
+    if (orchResult.signal === CYCLE_SIGNAL.COMPLETE) {
       notify("Claude — Cycle Complete", "orchestrate | planning finished", {
         event: "cycle-complete", cycleId: orchCycle.id, cycleType: orchCycle.type, turnCount: orchResult.turnCount,
       });
     }
 
-    if (orchResult.signal === "needs-human") {
+    if (orchResult.signal === CYCLE_SIGNAL.NEEDS_HUMAN) {
       appendSessionCycle("[autonomous] orchestrate", "blocked", "NEEDS_HUMAN_INPUT during planning");
-      console.log(
+      logger.info(
         `\n${chalk.red.bold("[BLOCKED]")} Orchestration needs human input. Run summary written to session.json.`,
       );
-      console.log(chalk.dim('  To provide input: cortex-harness resume "your answer"'));
+      logger.info(chalk.dim('  To provide input: cortex-harness resume "your answer"'));
       notify("Claude — Needs Input", `Orchestration blocked | ${userTask.slice(0, 60)}`);
       process.exit(0);
     }
 
-    appendSessionCycle("[autonomous] orchestrate", orchResult.signal === "complete" ? "done" : "partial");
+    appendSessionCycle("[autonomous] orchestrate", orchResult.signal === CYCLE_SIGNAL.COMPLETE ? "done" : "partial");
 
     queue = readQueue();
     if (!queue) {
-      console.log(`\n${chalk.red("[ERROR]")} Orchestrator did not write task-queue.json. Aborting.`);
+      logger.info(`\n${chalk.red("[ERROR]")} Orchestrator did not write task-queue.json. Aborting.`);
       notify("Claude — Run Failed", "No task queue produced by orchestrate cycle");
       process.exit(1);
     }
 
     const queueValidation = validateTaskQueue(queue);
     if (!queueValidation.valid) {
-      console.log(`\n${chalk.yellow("[WARN]")} task-queue.json schema issues:`);
-      queueValidation.errors.forEach((e) => console.log(`  ${chalk.dim("-")} ${e}`));
+      logger.info(`\n${chalk.yellow("[WARN]")} task-queue.json schema issues:`);
+      queueValidation.errors.forEach((e) => logger.info(`  ${chalk.dim("-")} ${e}`));
       appendLog({ type: "validation-warning", file: "task-queue.json", errors: queueValidation.errors });
     }
   }
 
-  console.log(`\n${chalk.bold(`Queue: ${queue.cycles.length} cycles`)}`);
+  logger.info(`\n${chalk.bold(`Queue: ${queue.cycles.length} cycles`)}`);
   queue.cycles.forEach((c) =>
-    console.log(
+    logger.info(
       `  ${c.status === "done" ? chalk.green("[✓]") : chalk.dim("[ ]")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`,
     ),
   );
-  console.log("");
+  logger.info("");
 
   // ── Phase 2: Execute queue ──────────────────────────────────────────────────
 
@@ -523,7 +536,7 @@ async function main() {
   while (true) {
     const remaining = MAX_BUDGET_USD - spendRef.value;
     if (remaining <= 0.1) {
-      console.log(
+      logger.info(
         `\n${chalk.red("[BUDGET]")} $${MAX_BUDGET_USD} exhausted (${chalk.red(`$${spendRef.value.toFixed(2)}`)} spent). Stopping.`,
       );
       notify("Claude — Budget Exhausted", `$${spendRef.value.toFixed(2)} spent`);
@@ -532,10 +545,10 @@ async function main() {
 
     const batch = nextCycleBatch(queue);
     if (!batch) {
-      console.log(`\n${chalk.green.bold("[DONE]")} All cycles complete.`);
+      logger.info(`\n${chalk.green.bold("[DONE]")} All cycles complete.`);
       const skippedPartials = queue.cycles.filter((c) => c.status === "partial");
       if (skippedPartials.length) {
-        console.log(`\n${chalk.yellow("[WARN]")} ${skippedPartials.length} cycle(s) marked partial during this run:`);
+        logger.info(`\n${chalk.yellow("[WARN]")} ${skippedPartials.length} cycle(s) marked partial during this run:`);
         for (const c of skippedPartials) {
           const outputWritten = cycleOutputWritten(c);
           const outputLabel =
@@ -545,11 +558,11 @@ async function main() {
           const statusNote = outputWritten
             ? `output saved (${outputLabel}) — resume to continue`
             : "no output written — did not start";
-          console.log(
+          logger.info(
             `  ${chalk.yellow("•")} ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)} — reason: ${c.partialReason ?? "unknown"} — ${chalk.dim(statusNote)}`,
           );
         }
-        console.log(`\n  ${chalk.dim("To retry: cortex-harness resume")}`);
+        logger.info(`\n  ${chalk.dim("To retry: cortex-harness resume")}`);
         notify(
           "Claude — Partial Cycles Skipped",
           `${skippedPartials.length} partial: ${skippedPartials.map((c) => c.id).join(", ")}`,
@@ -564,11 +577,11 @@ async function main() {
 
     if (batch.length === 1) {
       const attempt = (retryCount[batch[0].id] ?? 0) + 1;
-      console.log(
+      logger.info(
         `\n${chalk.bold(`[cycle${attempt > 1 ? ` retry ${attempt}` : ""}]`)} ${chalk.cyan(batch[0].id)} ${chalk.dim(`(${batch[0].type})`)}`,
       );
     } else {
-      console.log(
+      logger.info(
         `\n${chalk.bold(`[parallel ×${batch.length}]`)} ${batch.map((c) => chalk.cyan(c.id)).join(chalk.dim(" + "))}`,
       );
     }
@@ -667,7 +680,7 @@ async function main() {
               const failedUrls = lastAttempt.failures.map(f => f.url).filter(Boolean);
               if (failedUrls.length) {
                 probeUrlsJson = JSON.stringify({ ...probe, urls: failedUrls });
-                console.log(chalk.dim(`[SMOKE-RETRY] Narrowed to ${failedUrls.length} previously-failed URL(s): ${failedUrls.join(", ")}`));
+                logger.info(chalk.dim(`[SMOKE-RETRY] Narrowed to ${failedUrls.length} previously-failed URL(s): ${failedUrls.join(", ")}`));
               }
             } catch { /* malformed probeUrlsJson — run full list */ }
           }
@@ -694,7 +707,7 @@ async function main() {
 
       // ── Complete ──────────────────────────────────────────────────────────────
 
-      if (result.signal === "complete") {
+      if (result.signal === CYCLE_SIGNAL.COMPLETE) {
         let testReport = null;
 
         if (cycle.outputFile) {
@@ -703,10 +716,10 @@ async function main() {
 
           if (!rawJson) {
             if (isCritical) {
-              console.log(
+              logger.info(
                 `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} reported complete but ${cycle.outputFile} not written — treating as partial`,
               );
-              result.signal = "partial";
+              result.signal = CYCLE_SIGNAL.PARTIAL;
               result.finalMessage = `CYCLE_PARTIAL:output file ${cycle.outputFile} not written`;
             }
           } else {
@@ -715,13 +728,13 @@ async function main() {
               parsed = JSON.parse(rawJson);
             } catch {
               if (isCritical) {
-                console.log(
+                logger.info(
                   `  ${chalk.red("[ERROR]")} ${chalk.cyan(cycle.id)} wrote unparseable JSON to ${cycle.outputFile} — treating as failed`,
                 );
                 appendLog({ type: "validation-error", cycleId: cycle.id, file: cycle.outputFile, error: "invalid-json" });
-                result.signal = "failed";
+                result.signal = CYCLE_SIGNAL.FAILED;
               } else {
-                console.log(
+                logger.info(
                   `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} wrote invalid JSON to ${cycle.outputFile} — continuing with no context`,
                 );
               }
@@ -731,17 +744,17 @@ async function main() {
             if (parsed !== null) {
               const validation = validateCycleOutput(cycle.outputFile, parsed);
               if (!validation.valid && !validation.skipped) {
-                console.log(
+                logger.info(
                   `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} schema mismatch (${validation.schemaName}):`,
                 );
-                validation.errors.forEach((e) => console.log(`    ${chalk.dim("-")} ${e}`));
+                validation.errors.forEach((e) => logger.info(`    ${chalk.dim("-")} ${e}`));
                 appendLog({ type: "validation-warning", cycleId: cycle.id, errors: validation.errors });
                 if (isCritical) {
                   const defaults =
                     CONSERVATIVE_DEFAULTS[cycle.outputFile] ??
                     (cycle.type === "test" ? CONSERVATIVE_DEFAULTS["test.json"] : {});
                   testReport = { ...defaults, ...parsed };
-                  console.log(
+                  logger.info(
                     `  ${chalk.dim("[INFO]")} Using conservative defaults for missing critical fields in ${cycle.outputFile}`,
                   );
                 }
@@ -752,7 +765,7 @@ async function main() {
           }
         }
 
-        if (result.signal === "complete") {
+        if (result.signal === CYCLE_SIGNAL.COMPLETE) {
           cycle.status = "done";
           cycle.completedAt = new Date().toISOString();
           cycle.turns = result.turnCount;
@@ -763,9 +776,9 @@ async function main() {
             ? `${result.turnCount ?? 0} URL${(result.turnCount ?? 0) !== 1 ? "s" : ""} checked`
             : `${result.turnCount ?? 0} turns`;
           if (batch.length === 1)
-            console.log(`  ${chalk.green("[OK]")} ${chalk.dim(turnLabel)}`);
+            logger.info(`  ${chalk.green("[OK]")} ${chalk.dim(turnLabel)}`);
           else
-            console.log(`  ${chalk.green("[OK]")} ${chalk.cyan(cycle.id)} ${chalk.dim(`— ${turnLabel}`)}`);
+            logger.info(`  ${chalk.green("[OK]")} ${chalk.cyan(cycle.id)} ${chalk.dim(`— ${turnLabel}`)}`);
 
           notify("Claude — Cycle Complete", `${cycle.id} | ${turnLabel}`, {
             event: "cycle-complete", cycleId: cycle.id, cycleType: cycle.type, attempt, turnCount: result.turnCount,
@@ -777,10 +790,10 @@ async function main() {
           const unrevertable = checkAndRevertScopeViolations(cycle);
           if (unrevertable && unrevertable.length > 0) {
             appendLog({ type: "harness", event: "scope-revert-unrecoverable", cycleId: cycle.id, files: unrevertable });
-            console.log(
+            logger.info(
               `\n  ${chalk.red("[SCOPE CLEANUP]")} ${unrevertable.length} file(s) could not be auto-reverted — injecting cleanup cycle for ${chalk.cyan(cycle.agent)}:`,
             );
-            unrevertable.forEach((f) => console.log(`    ${chalk.dim("-")} ${chalk.red(f)}`));
+            unrevertable.forEach((f) => logger.info(`    ${chalk.dim("-")} ${chalk.red(f)}`));
 
             const cleanupCycle = buildScopeCleanupCycle(cycle, unrevertable);
             const insertIdx = queue.cycles.findIndex(
@@ -788,7 +801,7 @@ async function main() {
             );
             queue.cycles.splice(insertIdx !== -1 ? insertIdx : queue.cycles.length, 0, cleanupCycle);
             writeQueue(queue);
-            console.log(
+            logger.info(
               `  ${chalk.dim(`Cleanup cycle "${cleanupCycle.id}" inserted at position ${insertIdx !== -1 ? insertIdx : "end"}`)}`,
             );
             printPendingQueue(queue);
@@ -803,11 +816,11 @@ async function main() {
               const header = `# Delivery — ${runTimestamp}\n\n**Task:** ${userTask}\n\n---\n\n`;
               try {
                 writeFileSync(deliverFile, header + summary, "utf8");
-                console.log(
+                logger.info(
                   `  ${chalk.green("[DELIVER]")} Summary written to ${chalk.dim(`output/delivery-${runTimestamp}.md`)}`,
                 );
               } catch (err) {
-                console.log(`  ${chalk.yellow("[WARN]")} Could not write delivery markdown: ${err.message}`);
+                logger.info(`  ${chalk.yellow("[WARN]")} Could not write delivery markdown: ${err.message}`);
               }
             }
           }
@@ -881,12 +894,12 @@ async function main() {
               const insertAt = deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
               queue.cycles.splice(insertAt, 0, ...fixCycles, retrySmoke);
               writeQueue(queue);
-              console.log(
+              logger.info(
                 `  ${chalk.yellow("[SMOKE FIX]")} Smoke failed (attempt ${totalSmokeAttempts}/${MAX_RETRIES}) — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
               );
               printPendingQueue(queue);
             } else if (!testReport.passed && !testReport.skipped && !testReport.partial) {
-              console.log(
+              logger.info(
                 `  ${chalk.red("[SMOKE FAILED]")} Smoke failed after ${totalSmokeAttempts} attempt(s) — deliver will surface failures as NEEDS_HUMAN_INPUT`,
               );
             }
@@ -926,7 +939,7 @@ async function main() {
               const insertAt = deliverIdx !== -1 ? deliverIdx : queue.cycles.length;
               queue.cycles.splice(insertAt, 0, ...fixCycles, retryTest);
               writeQueue(queue);
-              console.log(
+              logger.info(
                 `  ${chalk.yellow("[FIX]")} Tests failed (attempt ${totalTestAttempts}/${MAX_RETRIES}) — injecting fix cycles for: ${chalk.cyan(surfaces.join(", "))}`,
               );
               printPendingQueue(queue);
@@ -942,7 +955,7 @@ async function main() {
               };
               queue.cycles.splice(deliverIdx !== -1 ? deliverIdx : queue.cycles.length, 0, recoveryCycle);
               writeQueue(queue);
-              console.log(
+              logger.info(
                 `  ${chalk.red("[RECOVERY]")} Tests failed after ${attempt} attempts — injecting recovery cycle`,
               );
               printPendingQueue(queue);
@@ -954,7 +967,7 @@ async function main() {
 
       // ── Needs human ───────────────────────────────────────────────────────────
 
-      if (result.signal === "needs-human") {
+      if (result.signal === CYCLE_SIGNAL.NEEDS_HUMAN) {
         const nhiIdx = result.finalMessage.indexOf("NEEDS_HUMAN_INPUT");
         const questionText = nhiIdx !== -1
           ? result.finalMessage.slice(nhiIdx + "NEEDS_HUMAN_INPUT".length).replace(/^[:\s–-]+/, "").trim()
@@ -967,18 +980,18 @@ async function main() {
         writeQueue(queue);
         appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason.slice(0, 200));
 
-        console.log(`\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} needs human input.`);
-        console.log(chalk.dim("  ─────────────────────────────────────────────"));
-        for (const line of questionText.split("\n")) console.log(`  ${line}`);
-        console.log(chalk.dim("  ─────────────────────────────────────────────"));
-        console.log(chalk.yellow('  Answer: cortex-harness resume "your answer"'));
+        logger.info(`\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} needs human input.`);
+        logger.info(chalk.dim("  ─────────────────────────────────────────────"));
+        for (const line of questionText.split("\n")) logger.info(`  ${line}`);
+        logger.info(chalk.dim("  ─────────────────────────────────────────────"));
+        logger.info(chalk.yellow('  Answer: cortex-harness resume "your answer"'));
 
         notify("Claude — Needs Input", questionText.slice(0, 100), {
           event: "needs-human-input", cycleId: cycle.id,
         });
         shouldBreak = true;
 
-      } else if (result.signal === "session-limit") {
+      } else if (result.signal === CYCLE_SIGNAL.SESSION_LIMIT) {
         const resetsAt = result.resetsAt ?? null;
         const resetStr = resetsAt
           ? new Date(resetsAt * 1000).toLocaleString()
@@ -988,22 +1001,39 @@ async function main() {
         cycle.blockedReason = `session/weekly limit hit — resets ${resetStr}`;
         writeQueue(queue);
         appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
-        console.log(`\n${chalk.red("[SESSION LIMIT]")} ${chalk.cyan(cycle.id)} — usage limit reached.`);
-        console.log(`  Resets: ${chalk.yellow(resetStr)}`);
-        console.log(`  ${chalk.dim("All pending cycles are preserved. Run `cortex-harness resume` after the limit resets.")}`);
+        logger.info(`\n${chalk.red("[SESSION LIMIT]")} ${chalk.cyan(cycle.id)} — usage limit reached.`);
+        logger.info(`  Resets: ${chalk.yellow(resetStr)}`);
+        logger.info(`  ${chalk.dim("All pending cycles are preserved. Run `cortex-harness resume` after the limit resets.")}`);
         notify("Claude — Session Limit Hit", `${cycle.id} blocked | resets ${resetStr}`, {
           event: "session-limit", cycleId: cycle.id, resetsAt,
         });
         shouldBreak = true;
 
-      } else if (result.signal === "partial") {
+      } else if (result.signal === CYCLE_SIGNAL.BILLING_ERROR) {
+        const billingUrl = result.finalMessage.match(/https:\/\/\S+/)?.[0] ?? null;
+        cycle.status = "blocked";
+        cycle.blockedType = "billing-error";
+        cycle.blockedReason = billingUrl
+          ? `payment method required — ${billingUrl}`
+          : "payment method required — see provider billing settings";
+        writeQueue(queue);
+        appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
+        logger.info(`\n${chalk.red.bold("[BILLING]")} ${chalk.cyan(cycle.id)} — provider rejected the call for lack of a payment method.`);
+        if (billingUrl) logger.info(`  Add one here: ${chalk.yellow(billingUrl)}`);
+        logger.info(`  ${chalk.dim("Retrying would fail identically — all pending cycles are preserved. Run `cortex-harness resume` once billing is fixed.")}`);
+        notify("Claude — Billing Error", `${cycle.id} blocked | payment method required`, {
+          event: "billing-error", cycleId: cycle.id, billingUrl,
+        });
+        shouldBreak = true;
+
+      } else if (result.signal === CYCLE_SIGNAL.PARTIAL) {
         const reasonMatch = result.finalMessage.match(/CYCLE_PARTIAL:(.+)/);
         const reason = reasonMatch?.[1]?.trim() ?? "incomplete";
         const nextAttempt = attempt + 1;
         const effectiveMaxRetries = getEffectiveMaxRetries(cycle, reason, result.signal, result.finalMessage);
 
         if (attempt < effectiveMaxRetries) {
-          console.log(
+          logger.info(
             `  ${chalk.yellow("[PARTIAL → retry]")} ${chalk.cyan(cycle.id)}: ${reason} ${chalk.dim(`(attempt ${nextAttempt}/${effectiveMaxRetries})`)}`,
           );
           notify("Claude — Cycle Retrying", `${cycle.id} | partial | retry ${nextAttempt}/${effectiveMaxRetries}`, {
@@ -1014,23 +1044,23 @@ async function main() {
           cycle.partialReason = reason;
           writeQueue(queue);
           appendSessionCycle(`[autonomous] ${cycle.id}`, "partial", reason);
-          console.log(
+          logger.info(
             `  ${chalk.yellow("[PARTIAL]")} ${chalk.cyan(cycle.id)} incomplete after ${attempt} attempts: ${reason}`,
           );
           const remainingAfter = queue.cycles.filter((c) => c.status === "pending");
           if (remainingAfter.length) {
-            console.log(
+            logger.info(
               `  ${chalk.yellow("[WARN]")} ${chalk.cyan(cycle.id)} is partial — run continues but downstream cycles may be affected. ${chalk.dim("Run: cortex-harness resume to retry.")}`,
             );
           }
           notify("Claude — Cycle Partial", `${cycle.id} | ${reason.slice(0, 80)}`);
         }
 
-      } else if (result.signal !== "complete") {
-        const isHardError = result.signal === "error";
+      } else if (result.signal !== CYCLE_SIGNAL.COMPLETE) {
+        const isHardError = result.signal === CYCLE_SIGNAL.ERROR;
         const effectiveMaxRetriesErr = getEffectiveMaxRetries(cycle, result.finalMessage, result.signal);
-        if (!isHardError && attempt < effectiveMaxRetriesErr) {
-          console.log(
+        if (isRetryable(result.signal) && attempt < effectiveMaxRetriesErr) {
+          logger.info(
             `  ${chalk.yellow(`[${result.signal.toUpperCase()} → retry ${attempt + 1}/${effectiveMaxRetriesErr}]`)} ${chalk.cyan(cycle.id)}`,
           );
           notify("Claude — Cycle Retrying", `${cycle.id} | ${result.signal} | retry ${attempt + 1}/${effectiveMaxRetriesErr}`, {
@@ -1043,7 +1073,7 @@ async function main() {
             : `${result.signal} after ${attempt} attempts`;
           writeQueue(queue);
           appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason);
-          console.log(
+          logger.info(
             isHardError
               ? `\n${chalk.red.bold("[ERROR]")} ${chalk.cyan(cycle.id)} failed to spawn — stopping run.`
               : `\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} ${result.signal} — ${attempt} attempts exhausted.`,
@@ -1072,16 +1102,16 @@ async function main() {
         ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
         : `${elapsed}s`;
 
-  console.log("");
-  console.log(chalk.bold.blue("━━━ Run Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
-  console.log(`${chalk.dim("Done     :")} ${done > 0 ? chalk.green(done) : done}`);
-  console.log(`${chalk.dim("Partial  :")} ${partial > 0 ? chalk.yellow(partial) : partial}`);
-  console.log(`${chalk.dim("Blocked  :")} ${blocked > 0 ? chalk.red(blocked) : blocked}`);
-  console.log(`${chalk.dim("Pending  :")} ${pending > 0 ? chalk.yellow(pending) : pending}`);
-  console.log(`${chalk.dim("Duration :")} ${duration}`);
-  console.log(`${chalk.dim("Spent    :")} $${spendRef.value.toFixed(2)} / $${MAX_BUDGET_USD}`);
-  console.log(`${chalk.dim("Log      :")} ${runLogFile}`);
-  console.log(chalk.bold.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+  logger.info("");
+  logger.info(chalk.bold.blue("━━━ Run Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+  logger.info(`${chalk.dim("Done     :")} ${done > 0 ? chalk.green(done) : done}`);
+  logger.info(`${chalk.dim("Partial  :")} ${partial > 0 ? chalk.yellow(partial) : partial}`);
+  logger.info(`${chalk.dim("Blocked  :")} ${blocked > 0 ? chalk.red(blocked) : blocked}`);
+  logger.info(`${chalk.dim("Pending  :")} ${pending > 0 ? chalk.yellow(pending) : pending}`);
+  logger.info(`${chalk.dim("Duration :")} ${duration}`);
+  logger.info(`${chalk.dim("Spent    :")} $${spendRef.value.toFixed(2)} / $${MAX_BUDGET_USD}`);
+  logger.info(`${chalk.dim("Log      :")} ${runLogFile}`);
+  logger.info(chalk.bold.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
 
   appendLog({
     type: "harness",
@@ -1096,7 +1126,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[FATAL]", err);
+  logger.error("[FATAL]", err);
   const appendLogFallback = (obj) => {
     try { appendFileSync(runLogFile, JSON.stringify(obj) + "\n", "utf8"); } catch { /* best-effort */ }
   };

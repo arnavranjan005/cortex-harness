@@ -4,6 +4,7 @@ import { spawn } from "child_process";
 import chalk from "chalk";
 import { resumeBlockedCycles } from "../helpers/run-control.mjs";
 import { confirm } from "../helpers/ui.mjs";
+import { logger } from "../../logger.mjs";
 
 // ctx: { pkgRoot }
 export function registerResumeCommand(program, ctx) {
@@ -14,7 +15,7 @@ export function registerResumeCommand(program, ctx) {
     )
     .action(async () => {
       process.once("SIGINT", () => {
-        console.log(
+        logger.info(
           chalk.yellow(
             "\n\n  Cancelled — no changes saved. Cycles remain blocked.",
           ),
@@ -28,28 +29,28 @@ export function registerResumeCommand(program, ctx) {
       if (result === "nothing-blocked") {
         const queueFile = path.join(cwd, ".harness", "task-queue.json");
         if (!fs.existsSync(queueFile)) {
-          console.error(
+          logger.error(
             chalk.red("[ERROR] No task-queue.json found. Nothing to resume."),
           );
           process.exit(1);
         }
-        console.log(chalk.dim("[INFO] No blocked cycles found. Starting run..."));
+        logger.info(chalk.dim("[INFO] No blocked cycles found. Starting run..."));
       }
 
       // Ask whether to start the run
-      console.log();
+      logger.info();
       const startRun = await confirm({
         message: "Start run now?",
         initialValue: true,
         fallback: true,
       });
       if (!startRun) {
-        console.log(
+        logger.info(
           chalk.dim("\n  Run skipped. Start manually with: cortex-harness run"),
         );
         return;
       }
-      console.log();
+      logger.info();
 
       const runPath = path.join(ctx.pkgRoot, "src", "run-autonomous.mjs");
       const proc = spawn("node", [runPath], { stdio: "inherit", cwd });

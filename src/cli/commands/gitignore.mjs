@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { patchGitignore, GITIGNORE_RUNTIME_ENTRIES } from "../helpers/gitignore.mjs";
+import { logger } from "../../logger.mjs";
 
 export function registerGitignoreCommand(program) {
   program
@@ -10,26 +11,26 @@ export function registerGitignoreCommand(program) {
     .action(async () => {
       const result = await patchGitignore(process.cwd());
       if (result === "present") {
-        console.log(
+        logger.info(
           chalk.dim(
             "  – .gitignore already contains harness entries — nothing to do.",
           ),
         );
       } else if (result === "appended") {
-        console.log(
+        logger.info(
           chalk.green("  ✓ Appended harness runtime entries to .gitignore"),
         );
-        console.log(chalk.dim("\n  Entries added:"));
+        logger.info(chalk.dim("\n  Entries added:"));
         GITIGNORE_RUNTIME_ENTRIES.forEach((e) =>
-          console.log(chalk.dim(`    ${e}`)),
+          logger.info(chalk.dim(`    ${e}`)),
         );
       } else {
-        console.log(
+        logger.info(
           chalk.green("  ✓ Created .gitignore with harness runtime entries"),
         );
-        console.log(chalk.dim("\n  Entries added:"));
+        logger.info(chalk.dim("\n  Entries added:"));
         GITIGNORE_RUNTIME_ENTRIES.forEach((e) =>
-          console.log(chalk.dim(`    ${e}`)),
+          logger.info(chalk.dim(`    ${e}`)),
         );
       }
     });

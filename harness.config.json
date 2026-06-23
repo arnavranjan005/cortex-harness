@@ -4,16 +4,31 @@
   "agentsDir": ".harness/agents",
   "agents": {
     "backend-subagent": {
-      "scope": ["api/", "libs/shared/schema", "libs/shared/types", "serverless/"]
+      "scope": [
+        "api/",
+        "libs/shared/schema",
+        "libs/shared/types",
+        "serverless/"
+      ]
     },
     "frontend-subagent": {
-      "scope": ["web/", "libs/shared/ui"]
+      "scope": [
+        "web/",
+        "libs/shared/ui"
+      ]
     },
     "distributed-subagent": {
-      "scope": ["worker/"]
+      "scope": [
+        "worker/"
+      ]
     },
     "infra-subagent": {
-      "scope": [".github/", "nx.json", "package.json", "tsconfig"]
+      "scope": [
+        ".github/",
+        "nx.json",
+        "package.json",
+        "tsconfig"
+      ]
     },
     "tester-subagent": {
       "scope": null
@@ -24,5 +39,6 @@
     "planner-subagent": {
       "scope": []
     }
-  }
+  },
+  "cliProvider": "claude"
 }

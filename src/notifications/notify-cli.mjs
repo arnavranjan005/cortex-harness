@@ -1,3 +1,4 @@
+import { logger } from "../logger.mjs";
 import {
   createEmptyNotificationConfig,
   NOTIFICATION_CONFIG_FILE,
@@ -11,36 +12,36 @@ import { sendWindowsNotification } from './notification-windows.mjs';
 import { confirm as uiConfirm, text as uiText } from '../cli/helpers/ui.mjs';
 
 function printHelp() {
-  console.log('Harness notification channels');
-  console.log('');
-  console.log('Commands:');
-  console.log('  npm run harness:notify -- help');
-  console.log('  npm run harness:notify -- register windows');
-  console.log('  npm run harness:notify -- register discord');
-  console.log('  npm run harness:notify -- list');
-  console.log('  npm run harness:notify -- test windows');
-  console.log('  npm run harness:notify -- test discord');
-  console.log('  npm run harness:notify -- unregister windows');
-  console.log('  npm run harness:notify -- unregister discord');
-  console.log('');
-  console.log('Windows setup:');
-  console.log('  1. Run `npm run harness:notify -- register windows`.');
-  console.log('  2. A test toast will be sent before the channel is enabled.');
-  console.log('');
-  console.log('Discord setup:');
-  console.log('  1. Open your Discord server and choose the text channel for harness alerts.');
-  console.log('  2. Open Channel Settings or Server Settings, then go to Integrations -> Webhooks.');
-  console.log('  3. Click Create Webhook / New Webhook and confirm the channel is the one you want.');
-  console.log('  4. Copy the generated webhook URL.');
-  console.log('  5. Run `npm run harness:notify -- register discord` and paste the full URL when prompted.');
-  console.log('  6. Enter a short display name for the channel (example: ops, alerts, team-a).');
-  console.log('  7. The CLI sends a test message first, then saves the webhook only if you confirm.');
-  console.log('  8. Run register discord again to add more Discord channels.');
-  console.log('  9. Run `npm run harness:notify -- unregister discord` and choose the channel to remove.');
-  console.log('  10. `npm run harness:notify -- test discord` sends a test message to every enabled Discord channel.');
-  console.log('');
-  console.log('Fallback behavior:');
-  console.log(
+  logger.info('Harness notification channels');
+  logger.info('');
+  logger.info('Commands:');
+  logger.info('  npm run harness:notify -- help');
+  logger.info('  npm run harness:notify -- register windows');
+  logger.info('  npm run harness:notify -- register discord');
+  logger.info('  npm run harness:notify -- list');
+  logger.info('  npm run harness:notify -- test windows');
+  logger.info('  npm run harness:notify -- test discord');
+  logger.info('  npm run harness:notify -- unregister windows');
+  logger.info('  npm run harness:notify -- unregister discord');
+  logger.info('');
+  logger.info('Windows setup:');
+  logger.info('  1. Run `npm run harness:notify -- register windows`.');
+  logger.info('  2. A test toast will be sent before the channel is enabled.');
+  logger.info('');
+  logger.info('Discord setup:');
+  logger.info('  1. Open your Discord server and choose the text channel for harness alerts.');
+  logger.info('  2. Open Channel Settings or Server Settings, then go to Integrations -> Webhooks.');
+  logger.info('  3. Click Create Webhook / New Webhook and confirm the channel is the one you want.');
+  logger.info('  4. Copy the generated webhook URL.');
+  logger.info('  5. Run `npm run harness:notify -- register discord` and paste the full URL when prompted.');
+  logger.info('  6. Enter a short display name for the channel (example: ops, alerts, team-a).');
+  logger.info('  7. The CLI sends a test message first, then saves the webhook only if you confirm.');
+  logger.info('  8. Run register discord again to add more Discord channels.');
+  logger.info('  9. Run `npm run harness:notify -- unregister discord` and choose the channel to remove.');
+  logger.info('  10. `npm run harness:notify -- test discord` sends a test message to every enabled Discord channel.');
+  logger.info('');
+  logger.info('Fallback behavior:');
+  logger.info(
     `  If ${NOTIFICATION_CONFIG_FILE.split(/[/\\]/).slice(-2).join('/')} does not exist yet, the harness keeps the current Windows-only fallback notifications.`,
   );
 }
@@ -79,8 +80,8 @@ async function prompt(question) {
 }
 
 async function registerWindows() {
-  console.log('Registering Windows notifications for the harness.');
-  console.log('A test toast will be sent now.');
+  logger.info('Registering Windows notifications for the harness.');
+  logger.info('A test toast will be sent now.');
 
   const result = await sendWindowsNotification({
     title: 'Claude Harness',
@@ -92,14 +93,14 @@ async function registerWindows() {
   }
 
   if (!(await confirm('Enable Windows notifications for future harness runs?'))) {
-    console.log('Windows registration cancelled.');
+    logger.info('Windows registration cancelled.');
     return;
   }
 
   const config = getConfig();
   config.channels.windows = { enabled: true };
   saveConfig(config);
-  console.log(
+  logger.info(
     `Windows notifications enabled. Config saved to ${NOTIFICATION_CONFIG_FILE}.`,
   );
 }
@@ -116,11 +117,11 @@ async function testDiscordWithWebhook(webhookUrl) {
 }
 
 async function registerDiscord() {
-  console.log('Registering Discord notifications for the harness.');
-  console.log(
+  logger.info('Registering Discord notifications for the harness.');
+  logger.info(
     'Discord webhooks are tied to one text channel. Create one in your server, then paste the generated URL here.',
   );
-  console.log(
+  logger.info(
     'Recommended path: Server Settings -> Integrations -> Webhooks -> Create Webhook -> choose the channel -> copy URL.',
   );
 
@@ -132,13 +133,13 @@ async function registerDiscord() {
     throw new Error(validation.error);
   }
 
-  console.log(
+  logger.info(
     `Sending a test Discord message to ${label} (${redactWebhook(validation.webhookUrl)})...`,
   );
   await testDiscordWithWebhook(validation.webhookUrl);
 
   if (!(await confirm('Enable Discord notifications for future harness runs?'))) {
-    console.log('Discord registration cancelled.');
+    logger.info('Discord registration cancelled.');
     return;
   }
 
@@ -152,7 +153,7 @@ async function registerDiscord() {
   });
   setDiscordRegistrations(config, registrations);
   saveConfig(config);
-  console.log(
+  logger.info(
     `Discord notifications enabled for ${label} (${redactWebhook(validation.webhookUrl)}). Config saved to ${NOTIFICATION_CONFIG_FILE}.`,
   );
 }
@@ -161,30 +162,30 @@ function listChannels() {
   const state = readNotificationConfig();
 
   if (!state.exists) {
-    console.log('No notification registry found.');
-    console.log(
+    logger.info('No notification registry found.');
+    logger.info(
       'Fallback: the harness will keep using the current Windows-only notifications until you register channels.',
     );
     return;
   }
 
   if (!state.valid) {
-    console.log(`Notification config is invalid: ${state.error}`);
-    console.log(`File: ${NOTIFICATION_CONFIG_FILE}`);
+    logger.info(`Notification config is invalid: ${state.error}`);
+    logger.info(`File: ${NOTIFICATION_CONFIG_FILE}`);
     return;
   }
 
   const windows = state.config.channels.windows;
   const discord = getDiscordRegistrations(state.config);
 
-  console.log(`Config: ${NOTIFICATION_CONFIG_FILE}`);
-  console.log(`Windows: ${windows?.enabled ? 'enabled' : 'disabled'}`);
+  logger.info(`Config: ${NOTIFICATION_CONFIG_FILE}`);
+  logger.info(`Windows: ${windows?.enabled ? 'enabled' : 'disabled'}`);
   if (!discord.length) {
-    console.log('Discord: none registered');
+    logger.info('Discord: none registered');
   } else {
-    console.log('Discord:');
+    logger.info('Discord:');
     discord.forEach((entry, index) => {
-      console.log(
+      logger.info(
         `  ${index + 1}. ${entry.label ?? entry.id} — ${entry.enabled ? 'enabled' : 'disabled'} (${redactWebhook(entry.webhookUrl)})`,
       );
     });
@@ -201,7 +202,7 @@ async function testWindows() {
     throw new Error(`Windows notification test failed: ${result.error}`);
   }
 
-  console.log('Windows notification test sent.');
+  logger.info('Windows notification test sent.');
 }
 
 async function testDiscord() {
@@ -209,7 +210,7 @@ async function testDiscord() {
   const registrations = state.exists && state.valid ? getDiscordRegistrations(state.config) : [];
 
   if (!registrations.length) {
-    console.log(
+    logger.info(
       'No registered Discord webhook found. This is a one-off test and nothing will be saved unless you register first.',
     );
     const webhookInput = await prompt('Discord webhook URL: ');
@@ -218,16 +219,16 @@ async function testDiscord() {
       throw new Error(validation.error);
     }
     await testDiscordWithWebhook(validation.webhookUrl);
-    console.log('Discord notification test sent.');
+    logger.info('Discord notification test sent.');
     return;
   }
 
   const enabledRegistrations = registrations.filter((entry) => entry.enabled && entry.webhookUrl);
   if (!enabledRegistrations.length) {
-    console.log('No enabled Discord registrations found to test.');
+    logger.info('No enabled Discord registrations found to test.');
     return;
   }
-  console.log(`Testing ${enabledRegistrations.length} enabled Discord registration(s)...`);
+  logger.info(`Testing ${enabledRegistrations.length} enabled Discord registration(s)...`);
   const settled = await Promise.allSettled(
     enabledRegistrations
       .map((entry) =>
@@ -242,13 +243,13 @@ async function testDiscord() {
     const entry = enabledRegistrations[index];
     const label = entry?.label ?? entry?.id ?? `discord-${index + 1}`;
     if (result.status === 'fulfilled') {
-      console.log(`  OK: ${label} (${redactWebhook(entry.webhookUrl)})`);
+      logger.info(`  OK: ${label} (${redactWebhook(entry.webhookUrl)})`);
     } else {
-      console.log(`  FAIL: ${label} (${redactWebhook(entry.webhookUrl)}) - ${result.reason?.message ?? String(result.reason)}`);
+      logger.info(`  FAIL: ${label} (${redactWebhook(entry.webhookUrl)}) - ${result.reason?.message ?? String(result.reason)}`);
     }
   });
 
-  console.log('Discord notification test complete.');
+  logger.info('Discord notification test complete.');
 }
 
 async function unregisterChannel(channel) {
@@ -256,24 +257,24 @@ async function unregisterChannel(channel) {
 
   if (channel !== 'discord') {
     if (!config.channels[channel]) {
-      console.log(`${channel} is not registered.`);
+      logger.info(`${channel} is not registered.`);
       return;
     }
 
     delete config.channels[channel];
     saveConfig(config);
-    console.log(`${channel} notifications unregistered.`);
+    logger.info(`${channel} notifications unregistered.`);
     return;
   }
 
   const registrations = getDiscordRegistrations(config);
   if (!registrations.length) {
-    console.log(`${channel} is not registered.`);
+    logger.info(`${channel} is not registered.`);
     return;
   }
 
   registrations.forEach((entry, index) => {
-    console.log(`  ${index + 1}. ${entry.label ?? entry.id} (${redactWebhook(entry.webhookUrl)})`);
+    logger.info(`  ${index + 1}. ${entry.label ?? entry.id} (${redactWebhook(entry.webhookUrl)})`);
   });
 
   const selection = await prompt('Remove which Discord channel? Enter number or exact label/id: ');
@@ -287,14 +288,14 @@ async function unregisterChannel(channel) {
         );
 
   if (!target) {
-    console.log('No matching Discord registration found. Nothing changed.');
+    logger.info('No matching Discord registration found. Nothing changed.');
     return;
   }
 
   const remaining = registrations.filter((entry) => entry.id !== target.id);
   setDiscordRegistrations(config, remaining);
   saveConfig(config);
-  console.log(`Discord registration removed: ${target.label ?? target.id}.`);
+  logger.info(`Discord registration removed: ${target.label ?? target.id}.`);
 }
 
 async function main() {
@@ -343,6 +344,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  logger.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

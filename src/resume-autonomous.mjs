@@ -1,3 +1,4 @@
+import { logger } from "./logger.mjs";
 /**
  * Resume a blocked autonomous run.
  * Answers are collected interactively by the CLI before this script is called.
@@ -16,7 +17,7 @@ const { harnessDir: HARNESS_DIR } = config;
 const QUEUE_FILE = join(HARNESS_DIR, "task-queue.json");
 
 if (!existsSync(QUEUE_FILE)) {
-  console.error("[ERROR] No task-queue.json found. Nothing to resume.");
+  logger.error("[ERROR] No task-queue.json found. Nothing to resume.");
   process.exit(1);
 }
 
@@ -24,17 +25,17 @@ let queue;
 try {
   queue = JSON.parse(readFileSync(QUEUE_FILE, "utf8"));
 } catch (err) {
-  console.error("[ERROR] Failed to parse task-queue.json", err.message);
+  logger.error("[ERROR] Failed to parse task-queue.json", err.message);
   process.exit(1);
 }
 
 const blockedCycles = queue.cycles.filter((c) => c.status === "blocked");
 if (!blockedCycles.length) {
-  console.log("[INFO] No blocked cycles found. Resuming normally...");
+  logger.info("[INFO] No blocked cycles found. Resuming normally...");
 } else {
   const sessionLimitCycles = blockedCycles.filter((c) => c.blockedType === "session-limit");
   if (sessionLimitCycles.length) {
-    console.log(`[RESUME] ${sessionLimitCycles.length} session-limit cycle(s) will retry.`);
+    logger.info(`[RESUME] ${sessionLimitCycles.length} session-limit cycle(s) will retry.`);
   }
 
   for (const c of blockedCycles) {
@@ -44,7 +45,7 @@ if (!blockedCycles.length) {
     delete c.blockedAt;
   }
   writeFileSync(QUEUE_FILE, JSON.stringify(queue, null, 2), "utf8");
-  console.log(`[RESUME] Marked ${blockedCycles.length} cycle(s) for retry.`);
+  logger.info(`[RESUME] Marked ${blockedCycles.length} cycle(s) for retry.`);
 }
 
 // Spawn run-autonomous.mjs
