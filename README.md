@@ -391,6 +391,7 @@ Reverts are non-destructive: a pre-run snapshot captures uncommitted work before
 | `authProfiles`           | array  | `[]`               | Named auth profiles captured by `cortex-harness auth`            |
 | `smokeUrls`              | array  | `[]`               | Explicit URLs to probe during smoke cycles (merged with detected) |
 | `smokeCheckBudgetPerUrl` | number | —                  | Max USD spend per URL during a smoke run                          |
+| `smokeCheckTimeoutMs`    | number | `90000` (Claude) / `180000` (OpenCode) | Wall-clock timeout per URL before the smoke-check subprocess is killed. OpenCode's higher default reflects it needing more tool-call turns per page in practice |
 | `routeParams`            | object | `{}`               | Concrete values for dynamic route segments during smoke URL scanning — keyed by param name (flat default) or by bracket route pattern (e.g. `"/clients/[id]"`, route-specific override) |
 | `mcpScope`               | object | `{}`               | Map of `"*"` / agent name / cycle type → allowed MCP server names. `"*"` applies to every cycle; a server missing from every key here never loads, even if it's in `.mcp.json`. Managed via `cortex-harness config` / `add-mcp-scope` / `remove-mcp-scope` — see [§2a](#2a-manage-mcp-server-scope) |
 

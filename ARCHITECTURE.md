@@ -597,6 +597,10 @@ For each URL, `smoke-orchestrator.mjs` spawns a **separate mini-Claude session**
 
 **Retry history:** On a `smoke-retry-N` cycle, every prior `smoke-attempt-*.json` snapshot and every `fix-*-smoke-attempt-*.json` report is read from `cycle-state/` and interleaved chronologically into each URL's check prompt (oldest first), so a retry doesn't re-diagnose or contradict a conclusion an earlier fix already reached. The retry's probe list is also narrowed to only the URLs that failed in the most recent snapshot. Each completed smoke run (including retries) writes its own numbered `smoke-attempt-N[-<group>].json` snapshot to `cycle-state/` for this purpose.
 
+**Per-URL timeout and provider-outage detection:** each URL's smoke-check subprocess is killed after `smokeCheckTimeoutMs` (config field; defaults to 90s for Claude, 180s for OpenCode — confirmed live OpenCode's build agent routinely needs more tool-call turns per page with no actual errors, just more steps). A timeout or spawn error is tagged `_noSignal: true` and carries the last ~500 chars of captured stdout/stderr as a diagnostic, instead of the old behavior of silently discarding the failure as a generic "smoke check timed out" with no trace. `runSmokeOrchestration()` tracks consecutive `_noSignal` results across URLs; **2 in a row** trips a `providerOutage` abort — the remaining URLs are skipped (each would just time out the same way) and the cycle returns `NEEDS_HUMAN_INPUT` advising the user to check the CLI provider's own status/logs before re-running, rather than treating N unrelated pages as N real app bugs.
+
+**Resuming an auth- or provider-outage-blocked smoke cycle:** `cortex-harness resume` (`src/cli/helpers/run-control/human-input.mjs`) detects these two block types from `blockedReason` text patterns (or the cycle's own `authIssue`/`providerOutage` output flag) and re-queues them automatically with no answer prompt — re-running the smoke check live is strictly more reliable than asking the user a yes/no question about external state ("are you logged in again?", "is the provider back?") and inferring from it. An earlier version gated this on a precondition check (e.g. verifying `smoke-auth-<profile>.json`'s mtime moved past the block time) before re-queuing; that's been replaced, since the smoke cycle re-validates the real state itself far more reliably than any precondition check could from outside it. When a cycle resumes this way, `runSmokeOrchestration()` also wipes the stale prior output and any numbered `smoke-attempt-*.json` snapshots for that cycle, so the resume is treated as a fresh attempt rather than polluting retry history with an attempt that was never a real test failure.
+
 ### Auth Command (`cortex-harness auth`)
 
 `src/cli/commands/auth.mjs` captures Playwright storage state for later reuse:
@@ -643,7 +647,8 @@ Smoke retries are counted **per group** (not per cycle ID) to prevent infinite l
 - `passed: true`
 - `skipped: true` — smoke auto-skipped (no browser MCP, no URLs detected)
 - `partial: true` — smoke session was rate-limited or hit turn cap
-- `authIssue: true` — session is stale; re-run `cortex-harness auth` to refresh
+- `authIssue: true` — session missing/stale; `resume` re-checks live (see Per-URL timeout and provider-outage detection above) — no manual auth precondition check before re-queuing
+- `providerOutage: true` — 2+ consecutive no-signal results; `resume` re-runs live, same as an auth block
 - `MAX_RETRIES` exhausted
 
 ### Deliver behavior
