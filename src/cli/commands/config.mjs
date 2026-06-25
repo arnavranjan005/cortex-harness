@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import fs from "fs-extra";
 import path from "path";
+import { logger } from "../../logger.mjs";
 import {
   loadHarnessConfig,
   saveHarnessConfig,
@@ -8,11 +9,13 @@ import {
   printScopeTable,
   printMcpScopeTable,
   printRouteParamsTable,
+  printCliProviderTable,
 } from "../helpers/harness-config.mjs";
 import { detectDevServerConfig } from "../../engine/process-utils.mjs";
 import { select, text, confirm, log, multiselect, note } from "../helpers/ui.mjs";
 import { serverScopeOptions, scopeListsEqual } from "../helpers/mcp-config.mjs";
 import { deriveFrontendRoot, detectFramework, scanDynamicRoutes, extractParamNames } from "../../engine/route-scanner.mjs";
+import { listProviders, isProviderInstalled, DEFAULT_CLI_PROVIDER } from "../../engine/cli-adapters/registry.mjs";
 
 // Plain-language label for an existing routeParams entry, used in the "remove" picker
 // so a user isn't asked to recognize their own raw JSON key/value shape.
@@ -61,18 +64,18 @@ async function setValuesForRoute(config, route, log, text, confirm) {
 function printDevServerTable(config) {
   const ds = config.devServer;
   if (!ds || !Array.isArray(ds.services) || !ds.services.length) {
-    console.log(chalk.dim("  devServer: (not configured)"));
+    logger.info(chalk.dim("  devServer: (not configured)"));
     return;
   }
-  console.log(chalk.bold("  Dev server"));
-  console.log(`  ${"command".padEnd(52)} ${"readinessUrl".padEnd(30)} cwd`);
-  console.log("  " + "─".repeat(90));
+  logger.info(chalk.bold("  Dev server"));
+  logger.info(`  ${"command".padEnd(52)} ${"readinessUrl".padEnd(30)} cwd`);
+  logger.info("  " + "─".repeat(90));
   for (const svc of ds.services) {
     const cmd = svc.command.length > 50 ? svc.command.slice(0, 47) + "..." : svc.command;
-    console.log(`  ${cmd.padEnd(52)} ${svc.readinessUrl.padEnd(30)} ${svc.cwd ?? ""}`);
+    logger.info(`  ${cmd.padEnd(52)} ${svc.readinessUrl.padEnd(30)} ${svc.cwd ?? ""}`);
   }
-  console.log(`  ${chalk.dim("browser:")} ${ds.browserUrl}   ${chalk.dim("timeout:")} ${(ds.startupTimeoutMs ?? 120000) / 1000}s`);
-  console.log();
+  logger.info(`  ${chalk.dim("browser:")} ${ds.browserUrl}   ${chalk.dim("timeout:")} ${(ds.startupTimeoutMs ?? 120000) / 1000}s`);
+  logger.info();
 }
 
 export function registerConfigCommand(program) {
@@ -102,6 +105,7 @@ export function registerConfigCommand(program) {
         { value: "mcp", label: "MCP server scope", hint: "which servers each agent can use" },
         { value: "devserver", label: "Dev server services" },
         { value: "routeparams", label: "Dynamic route params", hint: "values for [id]-style segments during smoke scans" },
+        { value: "cliprovider", label: "CLI backend", hint: "which agent CLI runs your cycles (claude, opencode, ...)" },
         { value: "exit", label: "Exit" },
       ],
       initialValue: "scopes",
@@ -198,15 +202,15 @@ export function registerConfigCommand(program) {
       if (dsChoice === "detect") {
         const detected = detectDevServerConfig(process.cwd());
         if (!detected) {
-          console.log(chalk.yellow("  No framework detected in this project."));
+          logger.info(chalk.yellow("  No framework detected in this project."));
         } else {
-          console.log(`\n  ${chalk.dim("Detected services:")}`);
+          logger.info(`\n  ${chalk.dim("Detected services:")}`);
           detected.services.forEach((svc, i) => {
-            console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
-            console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
-            if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+            logger.info(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
+            logger.info(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+            if (svc.cwd) logger.info(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
           });
-          console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
+          logger.info(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
           const apply = await confirm({
             message: "Apply to harness.config.json?",
             initialValue: true,
@@ -309,18 +313,54 @@ export function registerConfigCommand(program) {
         }
         printRouteParamsTable(config);
       }
+    } else if (top === "cliprovider") {
+      printCliProviderTable(config);
+
+      const current = config.cliProvider ?? DEFAULT_CLI_PROVIDER;
+      const chosen = await select({
+        message: "Which CLI backend should run your cycles?",
+        options: [
+          ...listProviders().map((provider) => ({
+            value: provider,
+            label: provider,
+            hint: isProviderInstalled(provider) ? "installed" : "not found on PATH",
+          })),
+          { value: "__back", label: "← Back" },
+        ],
+        initialValue: current,
+        fallback: "__back",
+      });
+
+      if (chosen !== "__back" && chosen !== current) {
+        let apply = true;
+        if (!isProviderInstalled(chosen)) {
+          apply = await confirm({
+            message: `"${chosen}" wasn't found on PATH — set it anyway? Runs will fail to spawn until it's installed.`,
+            initialValue: false,
+          });
+        }
+        if (apply) {
+          config.cliProvider = chosen;
+          dirty = true;
+          log.success(`CLI backend set to "${chosen}"${isProviderInstalled(chosen) ? "" : " (not yet installed)"}`);
+        } else {
+          log.warn(`Left CLI backend as "${current}".`);
+        }
+      }
+
+      printCliProviderTable(config);
     }
 
     if (dirty) {
       await saveHarnessConfig(configPath, config);
       await repatchFromConfig(process.cwd(), config);
-      console.log(
+      logger.info(
         chalk.green(
           "\n  harness.config.json saved and agent .md scope sections updated.",
         ),
       );
     } else {
-      console.log("  No changes made.");
+      logger.info("  No changes made.");
     }
   });
 
@@ -340,14 +380,14 @@ export function registerConfigCommand(program) {
     .action(async (agent, scopePath) => {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       if (!config.agents[agent]) {
-        console.error(chalk.red(`  Unknown agent: ${agent}`));
-        console.log("  Available:", Object.keys(config.agents).join(", "));
+        logger.error(chalk.red(`  Unknown agent: ${agent}`));
+        logger.info("  Available:", Object.keys(config.agents).join(", "));
         process.exit(1);
       }
       const scope = config.agents[agent].scope || [];
       const normalized = scopePath.endsWith("/") ? scopePath : scopePath + "/";
       if (scope.includes(normalized) || scope.includes(scopePath)) {
-        console.log(
+        logger.info(
           chalk.yellow(
             `  "${scopePath}" is already in ${agent}'s scope — no change.`,
           ),
@@ -357,7 +397,7 @@ export function registerConfigCommand(program) {
       config.agents[agent].scope = [...scope, normalized];
       await saveHarnessConfig(configPath, config);
       await repatchFromConfig(process.cwd(), config);
-      console.log(chalk.green(`  ✓ Added "${normalized}" to ${agent}`));
+      logger.info(chalk.green(`  ✓ Added "${normalized}" to ${agent}`));
       printScopeTable(config);
     });
 
@@ -368,7 +408,7 @@ export function registerConfigCommand(program) {
     .action(async (agent, scopePath) => {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       if (!config.agents[agent]) {
-        console.error(chalk.red(`  Unknown agent: ${agent}`));
+        logger.error(chalk.red(`  Unknown agent: ${agent}`));
         process.exit(1);
       }
       const before = config.agents[agent].scope || [];
@@ -379,17 +419,48 @@ export function registerConfigCommand(program) {
           s !== scopePath.replace(/\/$/, ""),
       );
       if (after.length === before.length) {
-        console.log(
+        logger.info(
           chalk.yellow(`  "${scopePath}" not found in ${agent}'s scope.`),
         );
-        console.log("  Current scope:", before.join(", ") || "(none)");
+        logger.info("  Current scope:", before.join(", ") || "(none)");
         process.exit(0);
       }
       config.agents[agent].scope = after;
       await saveHarnessConfig(configPath, config);
       await repatchFromConfig(process.cwd(), config);
-      console.log(chalk.green(`  ✓ Removed "${scopePath}" from ${agent}`));
+      logger.info(chalk.green(`  ✓ Removed "${scopePath}" from ${agent}`));
       printScopeTable(config);
+    });
+
+  // `cortex-harness config cli-provider` → print current CLI backend + install status
+  configCmd
+    .command("cli-provider")
+    .description("Print the configured CLI backend and which providers are installed")
+    .action(async () => {
+      const { config } = await loadHarnessConfig(process.cwd());
+      printCliProviderTable(config);
+    });
+
+  // `cortex-harness config set-cli-provider <name>` → switch CLI backend
+  configCmd
+    .command("set-cli-provider <name>")
+    .description("Set which CLI backend runs your cycles (e.g. claude, opencode)")
+    .action(async (name) => {
+      const { config, configPath } = await loadHarnessConfig(process.cwd());
+      if (!listProviders().includes(name)) {
+        logger.error(chalk.red(`  Unknown CLI provider: "${name}"`));
+        logger.info("  Available:", listProviders().join(", "));
+        process.exit(1);
+      }
+      if (!isProviderInstalled(name)) {
+        logger.info(
+          chalk.yellow(`  [WARN] "${name}" was not found on PATH — setting it anyway, but runs will fail to spawn until it's installed.`),
+        );
+      }
+      config.cliProvider = name;
+      await saveHarnessConfig(configPath, config);
+      logger.info(chalk.green(`  ✓ CLI backend set to "${name}"`));
+      printCliProviderTable(config);
     });
 
   // `cortex-harness config mcp-scope` → print MCP scope table
@@ -409,19 +480,19 @@ export function registerConfigCommand(program) {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       const validKeys = ["*", ...Object.keys(config.agents || {})];
       if (!validKeys.includes(agent)) {
-        console.error(chalk.red(`  Unknown key: ${agent}`));
-        console.log("  Valid keys:", validKeys.join(", "));
+        logger.error(chalk.red(`  Unknown key: ${agent}`));
+        logger.info("  Valid keys:", validKeys.join(", "));
         process.exit(1);
       }
       if (!config.mcpScope) config.mcpScope = {};
       const current = config.mcpScope[agent] ?? [];
       if (current.includes(serverName)) {
-        console.log(chalk.yellow(`  "${serverName}" already in ${agent}'s MCP scope — no change.`));
+        logger.info(chalk.yellow(`  "${serverName}" already in ${agent}'s MCP scope — no change.`));
         process.exit(0);
       }
       config.mcpScope[agent] = [...current, serverName];
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green(`  ✓ Added "${serverName}" to ${agent}'s MCP scope`));
+      logger.info(chalk.green(`  ✓ Added "${serverName}" to ${agent}'s MCP scope`));
       printMcpScopeTable(config);
     });
 
@@ -432,19 +503,19 @@ export function registerConfigCommand(program) {
     .action(async (agent, serverName) => {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       if (!config.mcpScope || !config.mcpScope[agent]) {
-        console.log(chalk.yellow(`  No MCP scope configured for "${agent}".`));
+        logger.info(chalk.yellow(`  No MCP scope configured for "${agent}".`));
         process.exit(0);
       }
       const before = config.mcpScope[agent];
       const after = before.filter((s) => s !== serverName);
       if (after.length === before.length) {
-        console.log(chalk.yellow(`  "${serverName}" not in ${agent}'s MCP scope.`));
-        console.log("  Current:", before.join(", ") || "(none)");
+        logger.info(chalk.yellow(`  "${serverName}" not in ${agent}'s MCP scope.`));
+        logger.info("  Current:", before.join(", ") || "(none)");
         process.exit(0);
       }
       config.mcpScope[agent] = after;
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green(`  ✓ Removed "${serverName}" from ${agent}'s MCP scope`));
+      logger.info(chalk.green(`  ✓ Removed "${serverName}" from ${agent}'s MCP scope`));
       printMcpScopeTable(config);
     });
 
@@ -467,17 +538,17 @@ export function registerConfigCommand(program) {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       const detected = detectDevServerConfig(process.cwd());
       if (!detected) {
-        console.log(chalk.yellow("  No framework detected in this project."));
-        console.log(chalk.dim("  Configure devServer manually in harness.config.json if needed."));
+        logger.info(chalk.yellow("  No framework detected in this project."));
+        logger.info(chalk.dim("  Configure devServer manually in harness.config.json if needed."));
         process.exit(0);
       }
-      console.log(`\n  ${chalk.dim("Detected services:")}`);
+      logger.info(`\n  ${chalk.dim("Detected services:")}`);
       detected.services.forEach((svc, i) => {
-        console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
-        console.log(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
-        if (svc.cwd) console.log(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
+        logger.info(`    ${chalk.cyan(`[${i + 1}]`)} ${svc.command}`);
+        logger.info(`         ${chalk.dim("ready:")} ${svc.readinessUrl}`);
+        if (svc.cwd) logger.info(`         ${chalk.dim("cwd:")}   ${svc.cwd}`);
       });
-      console.log(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
+      logger.info(`    ${chalk.dim(`browser: ${detected.browserUrl}`)}\n`);
 
       config.devServer = {
         browserUrl: detected.browserUrl,
@@ -485,7 +556,7 @@ export function registerConfigCommand(program) {
         services: detected.services,
       };
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green("  ✓ devServer written to harness.config.json"));
+      logger.info(chalk.green("  ✓ devServer written to harness.config.json"));
     });
 
   // `cortex-harness config dev-server clear` → remove devServer from config
@@ -495,12 +566,12 @@ export function registerConfigCommand(program) {
     .action(async () => {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       if (!config.devServer) {
-        console.log(chalk.dim("  devServer is not configured — nothing to clear."));
+        logger.info(chalk.dim("  devServer is not configured — nothing to clear."));
         process.exit(0);
       }
       delete config.devServer;
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green("  ✓ devServer removed from harness.config.json"));
+      logger.info(chalk.green("  ✓ devServer removed from harness.config.json"));
     });
 
   // `cortex-harness config route-params` → print routeParams table
@@ -521,7 +592,7 @@ export function registerConfigCommand(program) {
       if (!config.routeParams) config.routeParams = {};
       config.routeParams[name] = value;
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green(`  ✓ Set flat default "${name}" = "${value}"`));
+      logger.info(chalk.green(`  ✓ Set flat default "${name}" = "${value}"`));
       printRouteParamsTable(config);
     });
 
@@ -531,7 +602,7 @@ export function registerConfigCommand(program) {
     .description("Set a route-specific param override (e.g. /clients/[id] id demo-client-1) — wins over a flat default")
     .action(async (routePattern, name, value) => {
       if (!routePattern.startsWith("/")) {
-        console.error(chalk.red('  routePattern must start with "/" (e.g. /clients/[id])'));
+        logger.error(chalk.red('  routePattern must start with "/" (e.g. /clients/[id])'));
         process.exit(1);
       }
       const { config, configPath } = await loadHarnessConfig(process.cwd());
@@ -542,7 +613,7 @@ export function registerConfigCommand(program) {
           ? { ...existing, [name]: value }
           : { [name]: value };
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green(`  ✓ Set override ${routePattern} → "${name}" = "${value}"`));
+      logger.info(chalk.green(`  ✓ Set override ${routePattern} → "${name}" = "${value}"`));
       printRouteParamsTable(config);
     });
 
@@ -553,12 +624,12 @@ export function registerConfigCommand(program) {
     .action(async (key) => {
       const { config, configPath } = await loadHarnessConfig(process.cwd());
       if (!config.routeParams || !(key in config.routeParams)) {
-        console.log(chalk.yellow(`  "${key}" not found in routeParams.`));
+        logger.info(chalk.yellow(`  "${key}" not found in routeParams.`));
         process.exit(0);
       }
       delete config.routeParams[key];
       await saveHarnessConfig(configPath, config);
-      console.log(chalk.green(`  ✓ Removed "${key}" from routeParams`));
+      logger.info(chalk.green(`  ✓ Removed "${key}" from routeParams`));
       printRouteParamsTable(config);
     });
 }

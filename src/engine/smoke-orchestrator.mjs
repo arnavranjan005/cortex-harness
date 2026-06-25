@@ -4,6 +4,11 @@ import { spawn } from "child_process";
 import chalk from "chalk";
 import { startDevServer, killProc } from "./process-utils.mjs";
 import { isWindows } from "./constants.mjs";
+import { claudeAdapter } from "./cli-adapters/claude-adapter.mjs";
+import { normalizeAdapterOutput, diagnoseProviderFailure } from "./cli-adapters/output-normalize.mjs";
+import { parseLenientJson } from "./cli-adapters/lenient-json.mjs";
+import { logger } from "../logger.mjs";
+import { CYCLE_SIGNAL } from "./cycle-signal.mjs";
 
 // ── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -11,10 +16,10 @@ export function profileStorageFile(name) {
   return `.harness/smoke-auth-${name}.json`;
 }
 
-export function buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext = null, isDynamic = false) {
+export function buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext = null, isDynamic = false, adapter = claudeAdapter) {
   const hasProfiles = profileMcpNames.length > 0;
   const profileSessionLines = hasProfiles
-    ? profileMcpNames.map(n => `  mcp__playwright-${n}__* → ${n} profile`).join("\n")
+    ? profileMcpNames.map(n => `  ${adapter.mcpServerWildcard(`playwright-${n}`)} → ${n} profile`).join("\n")
     : "";
 
   const authStaleJson = `{"url":"${url}","profile":null,"status":"auth_stale","staleProfiles":[<names tried>],"pageRenderOk":false,"pageError":null,"renderSummary":null,"apiCalls":[],"apiCallCount":0,"consoleErrors":[],"consoleWarnings":[],"runtimeChecks":null,"issues":[],"screenshotPath":null}`;
@@ -22,7 +27,7 @@ export function buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorCon
 
   const profileTryBlock = hasProfiles
     ? profileMcpNames.map((n, i) =>
-        `    ${i + 1}. mcp__playwright-${n}__browser_navigate → ${devServerUrl}${url}`
+        `    ${i + 1}. ${adapter.mcpToolName(`playwright-${n}`, "browser_navigate")} → ${devServerUrl}${url}`
       ).join("\n")
     : "    (none configured)";
 
@@ -41,16 +46,16 @@ ${profileTryBlock}
 
 Page: ${devServerUrl}${url}
 Available MCP sessions:
-  mcp__playwright__*  → UNAUTHENTICATED probe — no stored credentials, always starts logged out
+  ${adapter.mcpServerWildcard("playwright")}  → UNAUTHENTICATED probe — no stored credentials, always starts logged out
 ${profileSessionLines || "  (no auth profiles — protected pages will return auth_needed)"}
 
 ━━━ STEP 1 — Classify page & select session ━━━━━━━━━━━━━━━━━━━━━━
 
-mcp__playwright__* has NO stored credentials. Always use it first to determine
+${adapter.mcpServerWildcard("playwright")} has NO stored credentials. Always use it first to determine
 whether this page requires authentication before doing any other checks.
 
   1a) Navigate with the unauthenticated probe:
-      mcp__playwright__browser_navigate → ${devServerUrl}${url}
+      ${adapter.mcpToolName("playwright", "browser_navigate")} → ${devServerUrl}${url}
 
   1b) After navigation, check the final URL:
       Run browser_evaluate: window.location.pathname
@@ -67,7 +72,7 @@ whether this page requires authentication before doing any other checks.
   1d) Select session based on result:
 
   ── NOT protected → page is PUBLIC ──
-    → Use mcp__playwright__* for ALL remaining steps (STEPS 2–8)
+    → Use ${adapter.mcpServerWildcard("playwright")} for ALL remaining steps (STEPS 2–8)
     → Set profile: "public"
 
 ${protectedBlock}
@@ -362,7 +367,7 @@ export function mergeResults(urlResults) {
       passed: false,
       skipped: false,
       authIssue: authBlock.status === "auth_needed" ? "missing" : "stale",
-      missingProfiles: authBlock.status === "auth_needed" ? [] : undefined,
+      missingProfiles: authBlock.status === "auth_needed" ? (authBlock.missingProfiles ?? []) : undefined,
       staleProfiles: authBlock.staleProfiles ?? [],
       affectedPages: [authBlock.url],
       pagesChecked: [],
@@ -448,22 +453,38 @@ export function buildAuthBlockMessage(authResult) {
 
 export function createSmokeOrchestrator({
   ROOT, HARNESS_DIR, CYCLE_DIR, RUNS_DIR,
-  config, CLAUDE_EXE, appendLog,
+  config, adapter = claudeAdapter, appendLog,
   buildFilteredMcpServers,
 }) {
-  function buildProfileMcpServers(filteredServers) {
+  // Returns only the playwright-<name> auth-profile server entries — never
+  // merged with anything here, so callers can choose how to combine them:
+  // Claude merges them straight into the in-memory mcpServers object passed
+  // to --mcp-config; OpenCode passes them as buildScopedConfig's
+  // additionalServers, since they're never written to .mcp.json on disk
+  // (the args, particularly --storage-state, differ per profile/per check).
+  // --storage-state is a flag on the Playwright MCP server binary itself
+  // (confirmed via `npx @playwright/mcp@latest --help`), not a Claude/OpenCode
+  // CLI flag — this mechanism is inherently CLI-agnostic, same servers work
+  // under either adapter once correctly wired into its MCP config format.
+  function buildAuthProfileServers(filteredServers) {
     const profiles = (config.authProfiles ?? []).filter(p =>
       p?.name && p?.storageFile && existsSync(join(ROOT, p.storageFile))
     );
-    if (!profiles.length) return filteredServers ?? {};
+    if (!profiles.length) return {};
 
-    const servers = filteredServers ? { ...filteredServers } : {};
-    const basePw = servers.playwright ?? { type: "stdio", command: "npx", args: ["-y", "@playwright/mcp@latest"] };
+    const basePw = filteredServers?.playwright ?? { type: "stdio", command: "npx", args: ["-y", "@playwright/mcp@latest"] };
+    const servers = {};
     for (const p of profiles) {
       servers[`playwright-${p.name}`] = {
         ...basePw,
         args: [
-          ...(basePw.args ?? []).filter(a => !String(a).startsWith("--storage-state")),
+          ...(basePw.args ?? []).filter(a => !String(a).startsWith("--storage-state") && a !== "--isolated"),
+          // --isolated is required for --storage-state to actually apply —
+          // confirmed live: without it, the server uses a persistent on-disk
+          // browser profile that ignores storage-state after first launch.
+          // This was a real, previously-unverified bug — auth profiles never
+          // actually loaded the saved session without this flag.
+          "--isolated",
           `--storage-state=${p.storageFile}`,
         ],
       };
@@ -476,70 +497,143 @@ export function createSmokeOrchestrator({
   // calls burn through 0.15 before the first page check completes.
   const perPageBudget = (config.smokeCheckBudgetPerUrl ?? 0.80).toFixed(2);
 
-  async function spawnMiniClaude(prompt, mcpConfigPath) {
+  // Per-URL wall-clock timeout before killing the sub-process. OpenCode needs
+  // more headroom than Claude by default — confirmed live: its build agent
+  // (e.g. deepseek-v4-flash-free) routinely takes 12+ tool-call loop steps to
+  // finish a single page check, well past 90s, with zero actual errors — it's
+  // just slower per turn, not stuck. Claude's smoke checks finish comfortably
+  // within 90s in the same project. Configurable via harness.config.json
+  // smokeCheckTimeoutMs so this can be tuned per-project without a code change.
+  const DEFAULT_SMOKE_CHECK_TIMEOUT_MS = adapter.name === "opencode" ? 180_000 : 90_000;
+  const smokeCheckTimeoutMs = config.smokeCheckTimeoutMs ?? DEFAULT_SMOKE_CHECK_TIMEOUT_MS;
+
+  // Always resolves to a single plain-text string regardless of adapter, so
+  // every caller below (JSON extraction, session-limit text matching) stays
+  // unchanged for both adapters. Claude's --output-format text already gives
+  // plain text; OpenCode's --format json gives an event stream, so its
+  // "assistant" text events are accumulated into one string here instead.
+  // Resolves { text, failure } — failure is a ProviderFailure (see
+  // diagnoseProviderFailure in output-normalize.mjs) when the call hard-failed
+  // on billing/session-limit, null otherwise. Checked structurally first (any
+  // json-stream adapter), with raw-text matching as fallback for "text"-format
+  // adapters (Claude's smoke-check mode has no structured events at all).
+  async function spawnMiniSession(prompt, mcpConfigPath) {
     return new Promise((resolve) => {
-      let output = "";
+      let rawOutput = "";
+      let rawStderr = "";
       const timeout = setTimeout(() => {
         try { killProc(proc); } catch {}
-        resolve(null);
-      }, 90_000);
+        // Keep whatever stdout/stderr had accumulated before the kill — otherwise
+        // a timeout leaves zero diagnostic trail beyond "smoke check timed out",
+        // making it impossible to tell a hung page load from a stuck MCP spawn.
+        resolve({
+          text: null,
+          failure: {
+            type: "timeout",
+            message: (rawStderr || rawOutput || "(no output captured before timeout)").slice(-500),
+          },
+        });
+      }, smokeCheckTimeoutMs);
+
+      const promptFile = join(RUNS_DIR, `smoke-prompt-${Date.now()}.txt`);
+      writeFileSync(promptFile, prompt, "utf8");
+
+      const spawnPlan = adapter.buildSmokeCheckSpawnPlan({
+        prompt,
+        mcpConfigPath,
+        isWindows,
+        allowedToolPatterns: [
+          adapter.mcpServerWildcard("playwright"),
+          adapter.mcpServerWildcard("playwright-*"),
+          "ToolSearch",
+        ],
+        maxTurns: 20,
+        budgetUsd: perPageBudget,
+        promptFile,
+      });
+      const spawnEnv = spawnPlan.env ? { ...process.env, ...spawnPlan.env } : undefined;
 
       let proc;
+      let psFile = null;
       if (isWindows) {
-        const promptFile = join(RUNS_DIR, `smoke-prompt-${Date.now()}.txt`);
-        const psFile = join(RUNS_DIR, `smoke-${Date.now()}.ps1`);
-        writeFileSync(promptFile, prompt, "utf8");
-        writeFileSync(
-          psFile,
-          `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${CLAUDE_EXE}" --print --mcp-config "${mcpConfigPath}" --allowedTools "mcp__playwright__*,mcp__playwright-*__*,ToolSearch" --output-format text --max-turns 20 --max-budget-usd ${perPageBudget} --dangerously-skip-permissions\n`,
-          "utf8",
-        );
+        psFile = join(RUNS_DIR, `smoke-${Date.now()}.ps1`);
+        writeFileSync(psFile, spawnPlan.psContent, "utf8");
         proc = spawn(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", psFile],
-          { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
+          spawnPlan.command,
+          spawnPlan.args.map((a) => (a === "__PS_FILE__" ? psFile : a)),
+          { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], ...(spawnEnv ? { env: spawnEnv } : {}) },
         );
-        proc.on("close", () => {
-          try { unlinkSync(promptFile); unlinkSync(psFile); } catch {}
-          clearTimeout(timeout); resolve(output.trim());
-        });
       } else {
-        proc = spawn(
-          CLAUDE_EXE,
-          ["-p", prompt, "--mcp-config", mcpConfigPath,
-           "--allowedTools", "mcp__playwright__*,mcp__playwright-*__*,ToolSearch",
-           "--output-format", "text", "--max-turns", "20",
-           "--max-budget-usd", perPageBudget, "--dangerously-skip-permissions"],
-          { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
-        );
-        proc.on("close", () => { clearTimeout(timeout); resolve(output.trim()); });
+        proc = spawn(spawnPlan.command, spawnPlan.args, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], ...(spawnEnv ? { env: spawnEnv } : {}) });
       }
-      proc.stdout?.on("data", chunk => { output += chunk.toString("utf8"); });
-      proc.on("error", () => { clearTimeout(timeout); resolve(null); });
+
+      proc.on("close", () => {
+        try { unlinkSync(promptFile); if (psFile) unlinkSync(psFile); } catch {}
+        clearTimeout(timeout);
+        const failure = diagnoseProviderFailure(adapter, { rawStdout: rawOutput, rawStderr, outputFormat: spawnPlan.outputFormat });
+        resolve({ text: normalizeAdapterOutput(adapter, rawOutput, spawnPlan.outputFormat), failure });
+      });
+      proc.stdout?.on("data", chunk => { rawOutput += chunk.toString("utf8"); });
+      proc.stderr?.on("data", chunk => { rawStderr += chunk.toString("utf8"); });
+      proc.on("error", (err) => {
+        clearTimeout(timeout);
+        resolve({ text: null, failure: { type: "spawn-error", message: err?.message ?? String(err) } });
+      });
     });
   }
 
-  async function checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames, priorContext = null, isDynamic = false) {
-    const tmpMcp = join(HARNESS_DIR, `tmp-mcp-smoke-${Date.now()}.json`);
-    writeFileSync(tmpMcp, JSON.stringify({ mcpServers }, null, 2), "utf8");
-
-    const prompt = buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext, isDynamic);
-    const raw = await spawnMiniClaude(prompt, tmpMcp);
-    try { unlinkSync(tmpMcp); } catch {}
-
-    if (!raw) {
-      return { url, profile: null, status: "fail", pageRenderOk: false,
-               pageError: "smoke check timed out", apiCalls: [], consoleErrors: [],
-               issues: ["smoke check timed out"], staleProfiles: [] };
+  async function checkOneUrl(url, devServerUrl, mcpServers, profileServers, profileMcpNames, missingConfiguredProfiles = [], priorContext = null, isDynamic = false) {
+    let tmpMcp;
+    if (adapter.capabilities.mcpScopeMechanism === "config-file" && adapter.buildScopedConfig) {
+      tmpMcp = adapter.buildScopedConfig({
+        ROOT,
+        allowedServerNames: Object.keys(mcpServers),
+        cycleId: `smoke-${Date.now()}`,
+        tmpDir: HARNESS_DIR,
+        additionalServers: profileServers,
+      });
+    } else {
+      tmpMcp = join(HARNESS_DIR, `tmp-mcp-smoke-${Date.now()}.json`);
+      writeFileSync(tmpMcp, JSON.stringify({ mcpServers }, null, 2), "utf8");
     }
 
-    // Detect Claude session/weekly limit before trying to parse JSON
-    if (/session limit|weekly limit|usage limit/i.test(raw) && !raw.includes("{")) {
-      const resetsMatch = raw.match(/resets\s+([^\n·•]+)/i);
+    const prompt = buildUrlCheckPrompt(url, devServerUrl, profileMcpNames, priorContext, isDynamic, adapter);
+    const { text: raw, failure } = await spawnMiniSession(prompt, tmpMcp);
+    if (tmpMcp) { try { unlinkSync(tmpMcp); } catch {} }
+
+    if (failure?.type === "billing") {
+      const billingUrl = failure.message.match(/https:\/\/\S+/)?.[0] ?? null;
+      return { url, profile: null, status: "billing-error", pageRenderOk: false,
+               pageError: "payment method required", apiCalls: [], consoleErrors: [],
+               issues: [`billing error: ${failure.message.slice(0, 200)}`],
+               _billingError: true, _billingUrl: billingUrl, staleProfiles: [] };
+    }
+
+    // Detect session/weekly limit — structurally first, raw-text fallback for
+    // "text"-format adapters (Claude's smoke-check mode) covers the case
+    // diagnoseProviderFailure's text matching missed for any reason.
+    if (failure?.type === "session-limit" || (raw && /session limit|weekly limit|usage limit/i.test(raw) && !raw.includes("{"))) {
+      const resetsMatch = raw?.match(/resets\s+([^\n·•]+)/i);
       return { url, profile: null, status: "session-limit",
                pageError: "session limit hit", apiCalls: [], consoleErrors: [],
-               issues: [`session limit: ${raw.slice(0, 200)}`],
+               issues: [`session limit: ${(failure?.message ?? raw ?? "").slice(0, 200)}`],
                _sessionLimit: true, _resetsAt: resetsMatch?.[1]?.trim() ?? null, staleProfiles: [] };
+    }
+
+    if (!raw) {
+      const diag = failure?.type === "timeout" && failure.message
+        ? `smoke check timed out — last output before kill: ${failure.message}`
+        : failure?.type === "spawn-error"
+        ? `smoke check failed to spawn: ${failure.message}`
+        : "smoke check timed out";
+      // _noSignal marks "the CLI sub-process produced nothing usable" (killed on
+      // timeout, failed to spawn, or exited with empty output) — distinct from a
+      // real render failure where the agent DID respond. The caller uses this to
+      // detect a flaky CLI provider/model backend (several of these in a row)
+      // instead of treating every page as an independent app bug to "fix".
+      return { url, profile: null, status: "fail", pageRenderOk: false,
+               pageError: "smoke check timed out", apiCalls: [], consoleErrors: [],
+               issues: [diag], staleProfiles: [], _noSignal: true };
     }
 
     // Extract JSON from final message (LLM may add surrounding text)
@@ -551,7 +645,20 @@ export function createSmokeOrchestrator({
     }
 
     try {
-      return JSON.parse(jsonMatch[0]);
+      const result = parseLenientJson(jsonMatch[0]);
+      // auth_stale is only ever returned after every configured profile was tried
+      // and all redirected to login (see protectedBlock above) — so the stale set
+      // is always the full profile list, regardless of what name strings the model
+      // echoed back in its JSON. Trust the known config names, not the model's text.
+      if (result.status === "auth_stale") result.staleProfiles = profileMcpNames;
+      // auth_needed fires when hasProfiles is false — either no profiles were ever
+      // configured, or every configured profile's storage file went missing. Name
+      // the latter case explicitly instead of letting it collapse into the generic
+      // "no auth state found" message.
+      if (result.status === "auth_needed" && missingConfiguredProfiles.length) {
+        result.missingProfiles = missingConfiguredProfiles;
+      }
+      return result;
     } catch {
       return { url, profile: null, status: "fail", pageRenderOk: false,
                pageError: "invalid JSON from smoke check", apiCalls: [], consoleErrors: [],
@@ -560,6 +667,36 @@ export function createSmokeOrchestrator({
   }
 
   async function runSmokeOrchestration(cycle, probeUrlsJson, devServerUrl, priorSmokeContext = null) {
+    // A cycle only ever re-runs under the SAME id after blocking on auth/session-limit/
+    // billing/provider-outage — real test failures are handled by injecting a NEW
+    // smoke-retry-N cycle, never by re-running this one. So if the prior output for
+    // this exact cycle was one of those blocks, this execution is the user re-running
+    // after fixing the external issue, not a machine retry. Treat it as a fresh
+    // attempt: wipe the stale output and any numbered snapshots so they don't
+    // pollute future fix-retry history with an "attempt" that was never a real
+    // test failure.
+    try {
+      const priorOutputPath = join(CYCLE_DIR, cycle.outputFile);
+      const prior = JSON.parse(readFileSync(priorOutputPath, "utf8"));
+      if (prior.authIssue || prior.providerOutage) {
+        const sg = cycle.taskGroup;
+        const smokeSuffix = sg ? `-${sg}` : "";
+        const attemptPattern = new RegExp(`^smoke-attempt-\\d+${smokeSuffix}\\.json$`);
+        for (const f of readdirSync(CYCLE_DIR)) {
+          if (attemptPattern.test(f)) {
+            try { unlinkSync(join(CYCLE_DIR, f)); } catch { /* best-effort cleanup */ }
+          }
+        }
+        try { unlinkSync(priorOutputPath); } catch { /* already gone */ }
+        appendLog({
+          type: "smoke-orchestrator",
+          event: "block-resume-reset",
+          cycleId: cycle.id,
+          reason: prior.authIssue ? "auth" : "provider-outage",
+        });
+      }
+    } catch { /* no prior output for this cycle — nothing to clear */ }
+
     const { urls = [], layoutAffected = false, dynamicUrls = [] } = JSON.parse(probeUrlsJson);
     const dynamicUrlSet = new Set(dynamicUrls);
 
@@ -567,37 +704,94 @@ export function createSmokeOrchestrator({
       const output = { passed: true, skipped: true, reason: "no page files changed",
                        pagesChecked: [], apiCallsChecked: [], consoleErrors: [], failures: [] };
       writeFileSync(join(CYCLE_DIR, cycle.outputFile), JSON.stringify(output, null, 2), "utf8");
-      return { signal: "complete", finalMessage: "CYCLE_COMPLETE", turnCount: 0 };
+      return { signal: CYCLE_SIGNAL.COMPLETE, finalMessage: "CYCLE_COMPLETE", turnCount: 0 };
     }
 
-    const rawServers = buildFilteredMcpServers("smoke");
-    const mcpServers = buildProfileMcpServers(rawServers);
-    const profileMcpNames = Object.keys(mcpServers)
+    const rawServers = buildFilteredMcpServers("smoke") ?? {};
+    // --storage-state is a Playwright MCP server flag, not a Claude/OpenCode
+    // CLI flag (confirmed via `npx @playwright/mcp@latest --help`) — auth
+    // profiles work the same way under either adapter once the servers are
+    // wired into that adapter's own MCP config format (see checkOneUrl).
+    const profileServers = buildAuthProfileServers(rawServers);
+    const mcpServers = { ...rawServers, ...profileServers };
+    const profileMcpNames = Object.keys(profileServers)
       .filter(k => k.startsWith("playwright-"))
       .map(k => k.replace("playwright-", ""));
+
+    // Profiles configured in harness.config.json whose storage-state file is
+    // missing/deleted get silently dropped by buildAuthProfileServers (it only
+    // wires up profiles whose file exists). Track them separately so an
+    // auth_needed block can name the specific profile(s) to re-run `auth` for,
+    // instead of collapsing "named profile lost its file" into the generic
+    // "no profiles configured at all" message.
+    const missingConfiguredProfiles = (config.authProfiles ?? [])
+      .filter(p => p?.name && p?.storageFile)
+      .map(p => p.name)
+      .filter(name => !profileMcpNames.includes(name));
 
     appendLog({ type: "smoke-orchestrator", event: "start", urls, profileMcpNames,
       isRetry: !!priorSmokeContext });
 
+    // Consecutive "no signal at all" results (timeout/spawn-error/empty output)
+    // mean the CLI provider/model backend itself is failing, not that N
+    // different pages all have real bugs — ploughing through all remaining
+    // URLs at 90s each just burns time, and the normal fix-cycle injection
+    // logic would wrongly try to "fix" pages that were never actually checked.
+    const PROVIDER_NO_SIGNAL_THRESHOLD = 2;
+    let consecutiveNoSignal = 0;
+    let providerOutage = false;
+
     const urlResults = [];
     for (const url of urls) {
-      const result = await checkOneUrl(url, devServerUrl, mcpServers, profileMcpNames, priorSmokeContext, dynamicUrlSet.has(url));
+      const result = await checkOneUrl(url, devServerUrl, mcpServers, profileServers, profileMcpNames, missingConfiguredProfiles, priorSmokeContext, dynamicUrlSet.has(url));
       appendLog({ type: "smoke-orchestrator", event: "url-result", url, status: result.status });
       urlResults.push(result);
       const issueCount = result.issues?.length ?? 0;
       const statusColor = result.status === "pass" ? chalk.green : result.status === "auth_needed" || result.status === "auth_stale" ? chalk.yellow : chalk.red;
-      console.log(chalk.dim("[SMOKE]"), chalk.bold(url), "→", statusColor(result.status) + (issueCount ? chalk.dim(` (${issueCount} issue${issueCount > 1 ? "s" : ""})`) : ""));
+      logger.info(chalk.dim("[SMOKE]"), chalk.bold(url), "→", statusColor(result.status) + (issueCount ? chalk.dim(` (${issueCount} issue${issueCount > 1 ? "s" : ""})`) : ""));
 
-      // Stop on first auth block or session limit — no point checking remaining URLs
+      // Stop on first auth block, session limit, or billing error — no point checking remaining URLs
       if (result.status === "auth_needed" || result.status === "auth_stale") break;
-      if (result._sessionLimit) break;
+      if (result._sessionLimit || result._billingError) break;
+
+      consecutiveNoSignal = result._noSignal ? consecutiveNoSignal + 1 : 0;
+      if (consecutiveNoSignal >= PROVIDER_NO_SIGNAL_THRESHOLD) {
+        providerOutage = true;
+        appendLog({ type: "smoke-orchestrator", event: "provider-outage-abort", url, consecutiveNoSignal });
+        logger.info(chalk.red(`  [PROVIDER OUTAGE] ${consecutiveNoSignal} consecutive page(s) produced no output — stopping smoke check early.`));
+        break;
+      }
+    }
+
+    if (providerOutage) {
+      // providerOutage flag lets the next run's stale-output check (see top of
+      // this function) recognize a resume the same way it recognizes authIssue —
+      // this wasn't a real test failure, so it shouldn't count as an "attempt".
+      const output = { ...mergeResults(urlResults), providerOutage: true };
+      writeFileSync(join(CYCLE_DIR, cycle.outputFile), JSON.stringify(output, null, 2), "utf8");
+      const msg = [
+        "NEEDS_HUMAN_INPUT",
+        `Smoke check got no output from the CLI provider on ${consecutiveNoSignal} consecutive page(s) — this looks like a model/provider`,
+        "outage (e.g. repeated backend errors), not a real app bug. Checking each remaining page would just keep timing out.",
+        "Check the CLI provider's own status/logs (e.g. OpenCode: ~/.local/share/opencode/log/opencode.log) before re-running.",
+        "Then: cortex-harness resume",
+      ].join("\n");
+      return { signal: CYCLE_SIGNAL.NEEDS_HUMAN, finalMessage: msg, turnCount: urlResults.length };
+    }
+
+    const billingErrorResult = urlResults.find(r => r._billingError);
+    if (billingErrorResult) {
+      const output = mergeResults(urlResults);
+      writeFileSync(join(CYCLE_DIR, cycle.outputFile), JSON.stringify(output, null, 2), "utf8");
+      const urlSuffix = billingErrorResult._billingUrl ? `\nAdd one here: ${billingErrorResult._billingUrl}` : "";
+      return { signal: CYCLE_SIGNAL.BILLING_ERROR, finalMessage: `NEEDS_HUMAN_INPUT\nProvider rejected the call for lack of a payment method.${urlSuffix}`, turnCount: urlResults.length };
     }
 
     const sessionLimitResult = urlResults.find(r => r._sessionLimit);
     if (sessionLimitResult) {
       const output = mergeResults(urlResults);
       writeFileSync(join(CYCLE_DIR, cycle.outputFile), JSON.stringify(output, null, 2), "utf8");
-      return { signal: "session-limit", resetsAt: null, finalMessage: `NEEDS_HUMAN_INPUT\nSession/weekly limit hit — resets ${sessionLimitResult._resetsAt ?? "unknown"}. Re-run after limit resets.`, turnCount: urlResults.length };
+      return { signal: CYCLE_SIGNAL.SESSION_LIMIT, resetsAt: null, finalMessage: `NEEDS_HUMAN_INPUT\nSession/weekly limit hit — resets ${sessionLimitResult._resetsAt ?? "unknown"}. Re-run after limit resets.`, turnCount: urlResults.length };
     }
 
     const output = mergeResults(urlResults);
@@ -619,10 +813,10 @@ export function createSmokeOrchestrator({
     if (output.authIssue) {
       const authResult = urlResults.find(r => r.status === "auth_needed" || r.status === "auth_stale");
       const msg = `NEEDS_HUMAN_INPUT\n${buildAuthBlockMessage(authResult)}`;
-      return { signal: "needs-human", finalMessage: msg, turnCount: urlResults.length };
+      return { signal: CYCLE_SIGNAL.NEEDS_HUMAN, finalMessage: msg, turnCount: urlResults.length };
     }
 
-    return { signal: "complete", finalMessage: "CYCLE_COMPLETE", turnCount: urlResults.length };
+    return { signal: CYCLE_SIGNAL.COMPLETE, finalMessage: "CYCLE_COMPLETE", turnCount: urlResults.length };
   }
 
   return { runSmokeOrchestration };

@@ -5,6 +5,7 @@ import http from "http";
 import https from "https";
 import chalk from "chalk";
 import { isWindows } from "./constants.mjs";
+import { logger } from "../logger.mjs";
 
 // On Windows, SIGTERM only signals the top-level PowerShell process.
 // taskkill /F /T kills the entire process tree including all descendants.
@@ -466,10 +467,10 @@ export async function startDevServer(dsConfig, { ROOT }) {
     cfg.services.map(async (svc) => {
       const already = await pollReadiness(svc.readinessUrl, 3_000);
       if (already) {
-        console.log(`  ${chalk.dim("[DEV SERVER]")} Already running at ${svc.readinessUrl}`);
+        logger.info(`  ${chalk.dim("[DEV SERVER]")} Already running at ${svc.readinessUrl}`);
         return { proc: null, ready: true };
       }
-      console.log(`  ${chalk.dim("[DEV SERVER]")} Starting: ${svc.command}`);
+      logger.info(`  ${chalk.dim("[DEV SERVER]")} Starting: ${svc.command}`);
       const proc = spawnService(svc, ROOT);
       const ready = await pollReadiness(svc.readinessUrl, timeoutMs);
       return { proc, ready };
@@ -481,12 +482,12 @@ export async function startDevServer(dsConfig, { ROOT }) {
 
   if (!allReady) {
     const failed = cfg.services.filter((_, i) => !results[i].ready).map((s) => s.readinessUrl);
-    console.log(`  ${chalk.yellow("[DEV SERVER]")} Not ready within ${timeoutMs / 1000}s: ${failed.join(", ")} — smoke will skip`);
+    logger.info(`  ${chalk.yellow("[DEV SERVER]")} Not ready within ${timeoutMs / 1000}s: ${failed.join(", ")} — smoke will skip`);
     spawnedProcs.forEach((p) => killProc(p));
     return { procs: [], browserUrl: "" };
   }
 
-  console.log(`  ${chalk.dim("[DEV SERVER]")} All services ready — browser: ${cfg.browserUrl}`);
+  logger.info(`  ${chalk.dim("[DEV SERVER]")} All services ready — browser: ${cfg.browserUrl}`);
   return { procs: spawnedProcs, browserUrl: cfg.browserUrl };
 }
 

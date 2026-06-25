@@ -25,8 +25,11 @@ process.stdin.on('end', () => {
   try {
     const event = JSON.parse(raw);
 
-    // Only track Agent tool completions
-    if (event.tool_name !== 'Agent') process.exit(0);
+    // Only track subagent-spawn tool completions. "Agent" is Claude Code's
+    // name for this tool; "task" is OpenCode's — claude-hooks-bridge's
+    // matcher translation only affects whether this hook fires, not the
+    // tool_name value in the payload, so both names must be checked here.
+    if (event.tool_name !== 'Agent' && event.tool_name !== 'task') process.exit(0);
 
     mkdirSync(HARNESS_DIR, { recursive: true });
 

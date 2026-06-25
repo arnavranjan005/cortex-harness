@@ -7,6 +7,8 @@ import chalk from "chalk";
 import { loadConfig } from "../../config-loader.mjs";
 import { intro, outro, log, note } from "../helpers/ui.mjs";
 import { startDevServer, killProc } from "../../engine/process-utils.mjs";
+import { resolveAdapter, DEFAULT_CLI_PROVIDER } from "../../engine/cli-adapters/registry.mjs";
+import { logger } from "../../logger.mjs";
 
 export const SMOKE_AUTH_FILE = ".harness/smoke-auth.json";
 
@@ -103,6 +105,17 @@ export function registerAuthCommand(program) {
       const gitignored = await patchGitignore(process.cwd(), resolvedOut);
       const configPatched = await upsertAuthProfile(process.cwd(), profileName, resolvedOut);
 
+      // Use the project's actual configured provider's own MCP-tool naming
+      // convention for this message — confirmed live this session that
+      // Claude's "mcp__<server>__*" and OpenCode's "<server>_*" genuinely
+      // differ, so a hardcoded Claude-style name here would be factually
+      // wrong (though harmless to the profile's actual function) for an
+      // OpenCode project.
+      const adapter = resolveAdapter(config?.cliProvider ?? DEFAULT_CLI_PROVIDER);
+      const profileToolWildcard = adapter.mcpServerWildcard
+        ? adapter.mcpServerWildcard(`playwright-${profileName}`)
+        : `playwright-${profileName}*`;
+
       const noteLines = [
         `${chalk.green("✓")} Auth state saved  ${chalk.dim(resolvedOut)}`,
         gitignored
@@ -113,7 +126,7 @@ export function registerAuthCommand(program) {
           : `${chalk.yellow("!")} harness.config.json not found — add manually:\n` +
             chalk.dim(`      { "name": "${profileName}", "storageFile": "${resolvedOut}" }  to authProfiles[]`),
         "",
-        `Profile "${chalk.cyan(profileName)}" ready as ${chalk.cyan(`mcp__playwright-${profileName}__*`)} in smoke cycles.`,
+        `Profile "${chalk.cyan(profileName)}" ready as ${chalk.cyan(profileToolWildcard)} in smoke cycles.`,
         chalk.dim(`Re-run \`cortex-harness auth --profile ${profileName}\` if your session expires.`),
       ];
 
@@ -178,7 +191,7 @@ async function openBrowserAndSave(url, storageOut) {
   let aborted = false;
   const sigintHandler = () => {
     aborted = true;
-    console.log("\n  Aborted — browser closed, no auth state saved.");
+    logger.info("\n  Aborted — browser closed, no auth state saved.");
     proc.kill("SIGTERM");
     process.exit(1);
   };
@@ -270,7 +283,7 @@ async function openBrowserAndSave(url, storageOut) {
     } catch { /* ignore — process will be killed in finally */ }
 
   } catch (err) {
-    if (!aborted) console.error(chalk.red(`\n  Browser session error: ${err.message}`));
+    if (!aborted) logger.error(chalk.red(`\n  Browser session error: ${err.message}`));
     exitCode = 1;
   } finally {
     process.removeListener("SIGINT", sigintHandler);

@@ -3,6 +3,7 @@ import path from "path";
 import { spawnSync } from "child_process";
 import chalk from "chalk";
 import { mergeMcpConfig, autoScopeMcpServers } from "../helpers/mcp-config.mjs";
+import { mergeOpenCodeConfig } from "../helpers/opencode-config.mjs";
 import { patchGitignore } from "../helpers/gitignore.mjs";
 import { fileIcon, copyFile, copyDir } from "../helpers/fs-utils.mjs";
 import {
@@ -54,6 +55,30 @@ export function registerInitCommand(program, ctx) {
         ".harness/agents",
         copyOpts,
       );
+
+      // 2a. OpenCode prompt/agent variants — scaffolded unconditionally (regardless of
+      // which cliProvider is currently selected) so switching providers later via
+      // `cortex-harness config` doesn't require re-running init.
+      if (await fs.pathExists(path.join(templatesDir, "prompts-opencode"))) {
+        log.step("Scaffolding OpenCode prompt variants");
+        await copyDir(
+          path.join(templatesDir, "prompts-opencode"),
+          path.join(targetHarnessDir, "prompts-opencode"),
+          rl,
+          ".harness/prompts-opencode",
+          copyOpts,
+        );
+      }
+      if (await fs.pathExists(path.join(templatesDir, "agents-opencode"))) {
+        log.step("Scaffolding OpenCode agent variants");
+        await copyDir(
+          path.join(templatesDir, "agents-opencode"),
+          path.join(targetHarnessDir, "agents-opencode"),
+          rl,
+          ".harness/agents-opencode",
+          copyOpts,
+        );
+      }
 
       // 3. Memory
       if (await fs.pathExists(path.join(templatesDir, "memory"))) {
@@ -132,6 +157,18 @@ export function registerInitCommand(program, ctx) {
         log.message(`${fileIcon(status)} ${chalk.dim("CLAUDE.md")}`);
       }
 
+      // AGENTS.md — OpenCode's preferred convention (it falls back to CLAUDE.md if
+      // AGENTS.md is absent, but takes AGENTS.md over CLAUDE.md when both exist).
+      // Generated from the project's own CLAUDE.md (just written above), not a
+      // separate hand-maintained template — single source of truth, no drift risk.
+      // Content is fully provider-agnostic prose (routing tables, protocol, security
+      // rules) so a straight copy is correct, not a placeholder.
+      const agentsMdPath = path.join(process.cwd(), "AGENTS.md");
+      if (await fs.pathExists(claudeMdPath)) {
+        const status = await copyFile(claudeMdPath, agentsMdPath, "AGENTS.md", rl, copyOpts);
+        log.message(`${fileIcon(status)} ${chalk.dim("AGENTS.md")}`);
+      }
+
       // 7. .gitignore
       {
         const result = await patchGitignore(process.cwd());
@@ -170,6 +207,25 @@ export function registerInitCommand(program, ctx) {
               `Skipped mcpScope for: ${skipped.join(", ")} — run "cortex-harness config add-mcp-scope <agent> <server>" to grant access.`,
             );
           }
+        }
+      }
+
+      // 8a. OpenCode plugin registration — additive-only, registers
+      // claude-hooks-bridge so existing .claude/settings.json hooks also work
+      // under the OpenCode provider. Always attempted (same philosophy as the
+      // prompts-opencode/agents-opencode dirs) regardless of which cliProvider
+      // is currently selected, so switching providers later just works.
+      {
+        const { status: ocStatus, added: ocAdded } = await mergeOpenCodeConfig(templatesDir, process.cwd());
+        const ocLabels = {
+          created: { icon: "created", note: "" },
+          merged: { icon: "updated", note: chalk.dim(`  (added: ${ocAdded.join(", ")})`) },
+          present: { icon: "kept", note: chalk.dim("  (already registered)") },
+          absent: null,
+        };
+        const label = ocLabels[ocStatus];
+        if (label) {
+          log.message(`${fileIcon(label.icon)} ${chalk.dim("opencode.json")}${label.note}`);
         }
       }
 

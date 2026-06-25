@@ -1,3 +1,4 @@
+import { logger } from "./logger.mjs";
 ﻿import { spawn } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -18,7 +19,7 @@ function warn(message, onWarning) {
     onWarning(message);
     return;
   }
-  console.warn(message);
+  logger.warn(message);
 }
 
 export function dispatchNotification({ title, message, meta = {}, onWarning }) {

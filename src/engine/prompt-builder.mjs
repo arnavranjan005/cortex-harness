@@ -1,6 +1,21 @@
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { MAX_RETRIES } from "./constants.mjs";
+
+// Reads <overrideDir>/<filename> first (if overrideDir is set), falling back to
+// <baseDir>/<filename> when no override exists for that specific file — most
+// prompt/agent files are identical across CLI providers, so only the handful
+// that actually differ need to exist in the override directory.
+function readWithProviderFallback(baseDir, overrideDir, filename) {
+  if (overrideDir) {
+    try {
+      return readFileSync(join(overrideDir, filename), "utf8");
+    } catch {
+      // no override for this file — fall through to the base dir
+    }
+  }
+  return readFileSync(join(baseDir, filename), "utf8");
+}
 
 /**
  * Returns a buildCyclePrompt function bound to the given runtime context.
@@ -8,6 +23,8 @@ import { MAX_RETRIES } from "./constants.mjs";
  * @param {object} ctx
  * @param {string} ctx.PROMPTS_DIR         - absolute path to prompts/
  * @param {string} ctx.AGENTS_DIR          - absolute path to agents/
+ * @param {string} [ctx.PROMPTS_OVERRIDE_DIR] - absolute path to a provider-specific prompts override dir, if cliProvider is non-default
+ * @param {string} [ctx.AGENTS_OVERRIDE_DIR]  - absolute path to a provider-specific agents override dir, if cliProvider is non-default
  * @param {string} ctx.CYCLE_DIR           - absolute path to cycle-state/
  * @param {string} ctx.CYCLE_STATE_RELDIR  - cycle-state/ relative to ROOT (for prompts)
  * @param {object} ctx.CONFIGURED_AGENTS   - agent map from harness.config.json
@@ -167,6 +184,8 @@ export function buildSmokeDiagnostic(rawJson) {
 export function createPromptBuilder({
   PROMPTS_DIR,
   AGENTS_DIR,
+  PROMPTS_OVERRIDE_DIR = null,
+  AGENTS_OVERRIDE_DIR = null,
   CYCLE_DIR,
   CYCLE_STATE_RELDIR,
   SNAPSHOT_RELDIR,
@@ -176,11 +195,11 @@ export function createPromptBuilder({
   readQueue,
 }) {
   function readAgentMd(agentName) {
-    const p = join(AGENTS_DIR, `${agentName}.agent.md`);
+    const filename = `${agentName}.agent.md`;
     try {
-      return readFileSync(p, "utf8");
+      return readWithProviderFallback(AGENTS_DIR, AGENTS_OVERRIDE_DIR, filename);
     } catch {
-      return `[Role block not found at ${p} — proceed as ${agentName} with standard scope guards]`;
+      return `[Role block not found at ${join(AGENTS_DIR, filename)} — proceed as ${agentName} with standard scope guards]`;
     }
   }
 
@@ -476,10 +495,12 @@ Current cycle: ${cycle.id}`;
       const templateKey = cycle.type.startsWith("implement-")
         ? "implement"
         : cycle.type;
-      const templatePath = join(PROMPTS_DIR, `${templateKey}.md`);
-      templateContent = existsSync(templatePath)
-        ? readFileSync(templatePath, "utf8")
-        : `${CONSTRAINTS}\n\nPerform cycle: ${cycle.id} (type: ${cycle.type})\n\nTask: ${taskFocus}\n${priorContext}\n\nWrite your output to: ${CYCLE_STATE_RELDIR}/${cycle.outputFile ?? cycle.id + ".json"}\n\nCYCLE_COMPLETE`;
+      const templateFilename = `${templateKey}.md`;
+      try {
+        templateContent = readWithProviderFallback(PROMPTS_DIR, PROMPTS_OVERRIDE_DIR, templateFilename);
+      } catch {
+        templateContent = `${CONSTRAINTS}\n\nPerform cycle: ${cycle.id} (type: ${cycle.type})\n\nTask: ${taskFocus}\n${priorContext}\n\nWrite your output to: ${CYCLE_STATE_RELDIR}/${cycle.outputFile ?? cycle.id + ".json"}\n\nCYCLE_COMPLETE`;
+      }
     }
 
     templateContent = templateContent

@@ -3,6 +3,8 @@ import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
 import { spawn } from "child_process";
+import { resolveAdapter, DEFAULT_CLI_PROVIDER } from "../../engine/cli-adapters/registry.mjs";
+import { logger } from "../../logger.mjs";
 
 // Claude Code built-in tools — never come from MCP.
 const BUILTIN_TOOLS = new Set([
@@ -25,23 +27,54 @@ const BUILTIN_TOOLS = new Set([
   "AskUserQuestion",
 ]);
 
-function extractToolCalls(runPath) {
+// OpenCode built-in tools — built from what's been directly observed live
+// against real OpenCode sessions this session (permission dumps, tool_use
+// events). Not confirmed exhaustive — unlike BUILTIN_TOOLS above, this list
+// hasn't been validated against OpenCode's own docs/source, only against
+// what was actually seen fire. Treat additions here as best-effort.
+const OPENCODE_BUILTIN_TOOLS = new Set([
+  "read", "write", "edit", "bash", "glob", "grep", "list",
+  "task", "webfetch", "websearch", "todowrite", "question", "patch",
+]);
+
+// Scans a run's own log for its "run-start" harness event to read back which
+// cliProvider that specific run actually used — not the project's *current*
+// config, which may have changed since. Falls back to the default provider
+// for older logs predating this field.
+export function getRunCliProvider(runPath) {
+  const lines = fs.readFileSync(runPath, "utf8").split("\n").filter(Boolean);
+  for (const line of lines) {
+    try {
+      const ev = JSON.parse(line);
+      if (ev.type === "harness" && ev.event === "run-start") {
+        return ev.cliProvider ?? DEFAULT_CLI_PROVIDER;
+      }
+    } catch {
+      /* skip malformed lines */
+    }
+  }
+  return DEFAULT_CLI_PROVIDER;
+}
+
+// Reuses the adapter's own parseEventLine/extractResult — the same functions
+// cycle-runner.mjs already relies on — instead of re-implementing Claude's
+// raw stream-json shape manually, so this works for any adapter with zero
+// per-provider parsing logic duplicated here.
+export function extractToolCalls(runPath, adapter) {
   const lines = fs.readFileSync(runPath, "utf8").split("\n").filter(Boolean);
   const calls = new Map(); // toolName → count
 
   for (const line of lines) {
     try {
       const ev = JSON.parse(line);
-      // Tool calls live in raw Claude stream events: type=assistant, content[].type=tool_use
-      if (ev.raw) {
-        const raw = typeof ev.raw === "string" ? JSON.parse(ev.raw) : ev.raw;
-        if ((raw.type === "assistant" || raw.role === "assistant") && Array.isArray(raw.message?.content)) {
-          for (const block of raw.message.content) {
-            if (block.type === "tool_use" && block.name) {
-              calls.set(block.name, (calls.get(block.name) ?? 0) + 1);
-            }
-          }
-        }
+      if (!ev.raw) continue;
+      const event = adapter.parseEventLine(ev.raw);
+      if (!event) continue;
+      const normalized = adapter.extractResult(event);
+      if (normalized?.kind !== "assistant") continue;
+      for (const call of normalized.toolCalls ?? []) {
+        if (!call.name) continue;
+        calls.set(call.name, (calls.get(call.name) ?? 0) + 1);
       }
     } catch {
       /* skip malformed lines */
@@ -50,28 +83,41 @@ function extractToolCalls(runPath) {
   return calls;
 }
 
-// Claude Code names every MCP tool call "mcp__<server>__<tool>" — that prefix
-// is enough to attribute a call to its server without any per-server pattern,
-// known or not. Server names are looked up case-sensitively against the
-// names actually registered in .mcp.json so attribution still reflects reality
-// (e.g. a server removed from .mcp.json after the run still shows up by name).
-function attributeTools(toolCalls) {
+// Claude Code names every MCP tool call "mcp__<server>__<tool>" — that fixed
+// prefix is enough to attribute a call to its server without needing to know
+// server names in advance. OpenCode has no such marker — confirmed live this
+// session its convention is "<server>_<tool>" with no prefix at all — so for
+// OpenCode the only reliable signal is matching against the server names
+// actually registered in .mcp.json (registeredServerNames).
+export function attributeTools(toolCalls, { adapter, registeredServerNames = [] } = {}) {
   const attribution = new Map(); // serverName → Map<toolName, count>
-  const builtins = new Map();    // known Claude Code internal tools
-  const unknownMcp = new Map();  // not built-in, no mcp__ prefix → unexpected
+  const builtins = new Map();    // known built-in tools for this adapter
+  const unknownMcp = new Map();  // not built-in, not matched to a known server
+
+  const isOpenCode = adapter?.name === "opencode";
+  const builtinSet = isOpenCode ? OPENCODE_BUILTIN_TOOLS : BUILTIN_TOOLS;
 
   for (const [tool, count] of toolCalls) {
-    if (BUILTIN_TOOLS.has(tool)) {
+    if (builtinSet.has(tool)) {
       builtins.set(tool, count);
       continue;
     }
 
-    const parts = tool.split("__");
-    if (parts[0] === "mcp" && parts.length >= 3) {
-      const serverName = parts[1];
-      if (!attribution.has(serverName)) attribution.set(serverName, new Map());
-      attribution.get(serverName).set(tool, count);
-      continue;
+    if (isOpenCode) {
+      const matchedServer = registeredServerNames.find((name) => tool.startsWith(`${name}_`));
+      if (matchedServer) {
+        if (!attribution.has(matchedServer)) attribution.set(matchedServer, new Map());
+        attribution.get(matchedServer).set(tool, count);
+        continue;
+      }
+    } else {
+      const parts = tool.split("__");
+      if (parts[0] === "mcp" && parts.length >= 3) {
+        const serverName = parts[1];
+        if (!attribution.has(serverName)) attribution.set(serverName, new Map());
+        attribution.get(serverName).set(tool, count);
+        continue;
+      }
     }
 
     unknownMcp.set(tool, count);
@@ -214,12 +260,12 @@ Subcommands:
   mcpCmd.on("command:*", (operands) => {
     const input = operands[0];
     const best = suggestCommand(input, SUB_COMMANDS);
-    console.error(chalk.red(`  Unknown mcp subcommand: "${input}"`));
+    logger.error(chalk.red(`  Unknown mcp subcommand: "${input}"`));
     if (best.d <= 3) {
-      console.log(chalk.yellow(`  Did you mean: ${chalk.bold(`cortex-harness mcp ${best.c}`)}`));
+      logger.info(chalk.yellow(`  Did you mean: ${chalk.bold(`cortex-harness mcp ${best.c}`)}`));
     }
-    console.log(chalk.dim(`  Available subcommands: ${SUB_COMMANDS.join(", ")}`));
-    console.log(chalk.dim(`  Run "cortex-harness mcp --help" for usage.`));
+    logger.info(chalk.dim(`  Available subcommands: ${SUB_COMMANDS.join(", ")}`));
+    logger.info(chalk.dim(`  Run "cortex-harness mcp --help" for usage.`));
     process.exit(1);
   });
 
@@ -279,13 +325,13 @@ async function showServers(cwd) {
   const W = Math.min(process.stdout.columns || 72, 72);
   const line = chalk.dim("─".repeat(W));
 
-  console.log(`\n${chalk.bold.cyan("  Registered MCP Servers")}`);
-  console.log(line);
+  logger.info(`\n${chalk.bold.cyan("  Registered MCP Servers")}`);
+  logger.info(line);
 
   if (!(await fs.pathExists(mcpPath))) {
-    console.log(chalk.dim("  No .mcp.json found in this directory."));
-    console.log(chalk.dim('  Run "cortex-harness init" to register the Playwright MCP server.'));
-    console.log();
+    logger.info(chalk.dim("  No .mcp.json found in this directory."));
+    logger.info(chalk.dim('  Run "cortex-harness init" to register the Playwright MCP server.'));
+    logger.info();
     return;
   }
 
@@ -293,8 +339,8 @@ async function showServers(cwd) {
   try {
     mcp = await fs.readJson(mcpPath);
   } catch {
-    console.log(chalk.red("  .mcp.json exists but could not be parsed."));
-    console.log();
+    logger.info(chalk.red("  .mcp.json exists but could not be parsed."));
+    logger.info();
     return;
   }
 
@@ -302,8 +348,8 @@ async function showServers(cwd) {
   const names = Object.keys(servers);
 
   if (!names.length) {
-    console.log(chalk.dim("  .mcp.json has no servers registered."));
-    console.log();
+    logger.info(chalk.dim("  .mcp.json has no servers registered."));
+    logger.info();
     return;
   }
 
@@ -329,15 +375,15 @@ async function showServers(cwd) {
     const cmd = [s.command, ...(s.args ?? [])].join(" ");
     const isUnscoped = scopedServers.size > 0 && !scopedServers.has(name);
     if (isUnscoped) unscoped.push(name);
-    console.log(`  ${chalk.green("●")} ${chalk.bold(name)}${isUnscoped ? chalk.yellow("  (not scoped to any agent)") : ""}`);
-    console.log(`    ${chalk.dim("type:")} ${s.type ?? "stdio"}  ${chalk.dim("cmd:")} ${chalk.cyan(cmd)}`);
+    logger.info(`  ${chalk.green("●")} ${chalk.bold(name)}${isUnscoped ? chalk.yellow("  (not scoped to any agent)") : ""}`);
+    logger.info(`    ${chalk.dim("type:")} ${s.type ?? "stdio"}  ${chalk.dim("cmd:")} ${chalk.cyan(cmd)}`);
   }
   if (unscoped.length) {
-    console.log(chalk.yellow(`\n  ${unscoped.join(", ")} won't load for any agent until scoped.`));
-    console.log(chalk.dim(`  Run "cortex-harness config" → MCP server scope, or "cortex-harness config add-mcp-scope <agent> <server>".`));
+    logger.info(chalk.yellow(`\n  ${unscoped.join(", ")} won't load for any agent until scoped.`));
+    logger.info(chalk.dim(`  Run "cortex-harness config" → MCP server scope, or "cortex-harness config add-mcp-scope <agent> <server>".`));
   }
-  console.log(chalk.dim(`\n  Run "cortex-harness mcp check" to verify servers are reachable.`));
-  console.log();
+  logger.info(chalk.dim(`\n  Run "cortex-harness mcp check" to verify servers are reachable.`));
+  logger.info();
 }
 
 async function showCheck(cwd) {
@@ -345,12 +391,12 @@ async function showCheck(cwd) {
   const W = Math.min(process.stdout.columns || 72, 72);
   const line = chalk.dim("─".repeat(W));
 
-  console.log(`\n${chalk.bold.cyan("  MCP Server Health Check")}`);
-  console.log(line);
+  logger.info(`\n${chalk.bold.cyan("  MCP Server Health Check")}`);
+  logger.info(line);
 
   if (!(await fs.pathExists(mcpPath))) {
-    console.log(chalk.dim("  No .mcp.json found — nothing to check."));
-    console.log();
+    logger.info(chalk.dim("  No .mcp.json found — nothing to check."));
+    logger.info();
     return;
   }
 
@@ -358,8 +404,8 @@ async function showCheck(cwd) {
   try {
     mcp = await fs.readJson(mcpPath);
   } catch {
-    console.log(chalk.red("  .mcp.json could not be parsed."));
-    console.log();
+    logger.info(chalk.red("  .mcp.json could not be parsed."));
+    logger.info();
     return;
   }
 
@@ -367,12 +413,12 @@ async function showCheck(cwd) {
   const names = Object.keys(servers);
 
   if (!names.length) {
-    console.log(chalk.dim("  No servers registered."));
-    console.log();
+    logger.info(chalk.dim("  No servers registered."));
+    logger.info();
     return;
   }
 
-  console.log(chalk.dim(`  Spawning ${names.length} server(s) and sending initialize handshake...\n`));
+  logger.info(chalk.dim(`  Spawning ${names.length} server(s) and sending initialize handshake...\n`));
 
   const results = await Promise.all(
     names.map(async (name) => ({ name, result: await checkServer(name, servers[name]) }))
@@ -385,20 +431,20 @@ async function showCheck(cwd) {
         ? chalk.dim(` — ${result.serverInfo.name ?? name}${result.serverInfo.version ? " v" + result.serverInfo.version : ""}`)
         : "";
       const latency = chalk.dim(` (${result.latencyMs}ms)`);
-      console.log(`  ${chalk.green("✓")} ${chalk.bold(name)}${info}${latency}`);
+      logger.info(`  ${chalk.green("✓")} ${chalk.bold(name)}${info}${latency}`);
     } else {
       allOk = false;
-      console.log(`  ${chalk.red("✗")} ${chalk.bold(name)}  ${chalk.red(result.error)}`);
+      logger.info(`  ${chalk.red("✗")} ${chalk.bold(name)}  ${chalk.red(result.error)}`);
     }
   }
 
-  console.log();
+  logger.info();
   if (allOk) {
-    console.log(chalk.green("  All servers healthy."));
+    logger.info(chalk.green("  All servers healthy."));
   } else {
-    console.log(chalk.yellow("  Some servers failed. Check the command and args in .mcp.json."));
+    logger.info(chalk.yellow("  Some servers failed. Check the command and args in .mcp.json."));
   }
-  console.log();
+  logger.info();
 }
 
 async function showUsage(cwd, runArg) {
@@ -407,7 +453,7 @@ async function showUsage(cwd, runArg) {
   const line = chalk.dim("─".repeat(W));
 
   if (!(await fs.pathExists(runsDir))) {
-    console.log(chalk.dim("  No run logs found (.harness/runs/ missing)."));
+    logger.info(chalk.dim("  No run logs found (.harness/runs/ missing)."));
     return;
   }
 
@@ -417,7 +463,7 @@ async function showUsage(cwd, runArg) {
     .reverse();
 
   if (!runFiles.length) {
-    console.log(chalk.dim("  No run logs found."));
+    logger.info(chalk.dim("  No run logs found."));
     return;
   }
 
@@ -425,8 +471,8 @@ async function showUsage(cwd, runArg) {
   if (runArg) {
     targetFile = `${runArg}.jsonl`;
     if (!runFiles.includes(targetFile)) {
-      console.log(chalk.red(`  Run "${runArg}" not found.`));
-      console.log(chalk.dim("  Available: " + runFiles.slice(0, 5).map((f) => f.replace(".jsonl", "")).join(", ")));
+      logger.info(chalk.red(`  Run "${runArg}" not found.`));
+      logger.info(chalk.dim("  Available: " + runFiles.slice(0, 5).map((f) => f.replace(".jsonl", "")).join(", ")));
       process.exit(1);
     }
   } else {
@@ -436,14 +482,18 @@ async function showUsage(cwd, runArg) {
   const runPath = path.join(runsDir, targetFile);
   const runLabel = targetFile.replace(".jsonl", "");
 
-  console.log(`${chalk.bold.cyan("  Tool Usage")}  ${chalk.dim("run: " + runLabel)}`);
-  console.log(line);
+  logger.info(`${chalk.bold.cyan("  Tool Usage")}  ${chalk.dim("run: " + runLabel)}`);
+  logger.info(line);
 
-  const toolCalls = extractToolCalls(runPath);
+  // Resolve the adapter this specific run actually used (from its own logged
+  // run-start event), not the project's current cliProvider — a project may
+  // have switched providers since this run happened.
+  const adapter = resolveAdapter(getRunCliProvider(runPath));
+  const toolCalls = extractToolCalls(runPath, adapter);
 
   if (!toolCalls.size) {
-    console.log(chalk.dim("  No tool calls recorded in this run."));
-    console.log();
+    logger.info(chalk.dim("  No tool calls recorded in this run."));
+    logger.info();
     return;
   }
 
@@ -454,32 +504,32 @@ async function showUsage(cwd, runArg) {
     servers = mcp.mcpServers ?? {};
   } catch { /* no .mcp.json — show everything as unattributed */ }
 
-  const { attribution, builtins, unknownMcp } = attributeTools(toolCalls);
+  const { attribution, builtins, unknownMcp } = attributeTools(toolCalls, { adapter, registeredServerNames: Object.keys(servers) });
 
   // 1. Attributed MCP calls per registered server
   for (const [serverName, tools] of attribution) {
     const total = [...tools.values()].reduce((a, b) => a + b, 0);
-    console.log(`\n  ${chalk.green("●")} ${chalk.bold(serverName)} MCP  ${chalk.dim(`(${total} calls)`)}`);
+    logger.info(`\n  ${chalk.green("●")} ${chalk.bold(serverName)} MCP  ${chalk.dim(`(${total} calls)`)}`);
     for (const [tool, count] of [...tools.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`    ${chalk.magenta("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
+      logger.info(`    ${chalk.magenta("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
     }
   }
 
   // 2. Unknown MCP — not built-in, not matched to any registered server
   if (unknownMcp.size) {
     const total = [...unknownMcp.values()].reduce((a, b) => a + b, 0);
-    console.log(`\n  ${chalk.yellow("●")} ${chalk.yellow("MCP (unregistered server)")}  ${chalk.dim(`(${total} calls)`)}`);
+    logger.info(`\n  ${chalk.yellow("●")} ${chalk.yellow("MCP (unregistered server)")}  ${chalk.dim(`(${total} calls)`)}`);
     for (const [tool, count] of [...unknownMcp.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`    ${chalk.yellow("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
+      logger.info(`    ${chalk.yellow("⚙")} ${tool.padEnd(36)} ${chalk.dim("×" + count)}`);
     }
   }
 
   // 3. Built-in Claude Code tools
   if (builtins.size) {
     const total = [...builtins.values()].reduce((a, b) => a + b, 0);
-    console.log(`\n  ${chalk.dim("●")} ${chalk.dim(`built-in  (${total} calls)`)}`);
+    logger.info(`\n  ${chalk.dim("●")} ${chalk.dim(`built-in  (${total} calls)`)}`);
     for (const [tool, count] of [...builtins.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`    ${chalk.dim("⚙")} ${chalk.dim(tool.padEnd(36) + " ×" + count)}`);
+      logger.info(`    ${chalk.dim("⚙")} ${chalk.dim(tool.padEnd(36) + " ×" + count)}`);
     }
   }
 
@@ -487,8 +537,8 @@ async function showUsage(cwd, runArg) {
   const usedServers = new Set(attribution.keys());
   const unusedServers = Object.keys(servers).filter((s) => !usedServers.has(s));
   if (unusedServers.length) {
-    console.log(`\n  ${chalk.dim("No calls recorded for:")} ${unusedServers.map((s) => chalk.dim(s)).join(", ")}`);
+    logger.info(`\n  ${chalk.dim("No calls recorded for:")} ${unusedServers.map((s) => chalk.dim(s)).join(", ")}`);
   }
 
-  console.log();
+  logger.info();
 }

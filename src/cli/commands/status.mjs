@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import path from "path";
 import chalk from "chalk";
+import { logger } from "../../logger.mjs";
 
 export function registerStatusCommand(program) {
   program
@@ -11,10 +12,10 @@ export function registerStatusCommand(program) {
     .action(async () => {
       const queuePath = path.join(process.cwd(), ".harness", "task-queue.json");
       if (!(await fs.pathExists(queuePath))) {
-        console.log(
+        logger.info(
           chalk.dim("  No active run found (task-queue.json missing)."),
         );
-        console.log(
+        logger.info(
           chalk.dim('  Start one with: cortex-harness run "your task"'),
         );
         return;
@@ -24,7 +25,7 @@ export function registerStatusCommand(program) {
       try {
         queue = await fs.readJson(queuePath);
       } catch {
-        console.log(
+        logger.info(
           chalk.red("  task-queue.json exists but could not be parsed."),
         );
         return;
@@ -143,10 +144,10 @@ export function registerStatusCommand(program) {
       function printWrapped(text, indent = 2) {
         for (const para of String(text ?? "").split("\n")) {
           if (para.trim() === "") {
-            console.log();
+            logger.info();
             continue;
           }
-          console.log(wrap(para, indent));
+          logger.info(wrap(para, indent));
         }
       }
 
@@ -165,12 +166,12 @@ export function registerStatusCommand(program) {
           ? (queue.task ?? "").slice(0, 100) + "…"
           : (queue.task ?? "(unknown)");
 
-      console.log(
+      logger.info(
         `\n${chalk.bold.blue("━━━ Harness Status ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`,
       );
-      console.log(`${chalk.dim("Task   :")} ${taskDisplay}`);
-      console.log(`${chalk.dim("Type   :")} ${queue.promptType ?? "(unknown)"}`);
-      console.log(
+      logger.info(`${chalk.dim("Task   :")} ${taskDisplay}`);
+      logger.info(`${chalk.dim("Type   :")} ${queue.promptType ?? "(unknown)"}`);
+      logger.info(
         `${chalk.dim("Queue  :")} ${chalk.green(done.length + " done")}  ` +
           `${chalk.yellow(pending.length + " pending")}  ` +
           `${chalk.yellow(partial.length + " partial")}  ` +
@@ -179,60 +180,60 @@ export function registerStatusCommand(program) {
 
       // ── Blocked: needs human input ──────────────────────────────────────────
       if (needsInput.length) {
-        console.log(`\n${chalk.red.bold("  Waiting for your input:")}`);
+        logger.info(`\n${chalk.red.bold("  Waiting for your input:")}`);
         for (const c of needsInput) {
-          console.log(`\n  ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`);
-          console.log(
+          logger.info(`\n  ${chalk.cyan(c.id)} ${chalk.dim(`(${c.type})`)}`);
+          logger.info(
             chalk.dim("  ─────────────────────────────────────────────"),
           );
           const questionText = getQuestionText(c);
           if (questionText) {
             printWrapped(questionText, 2);
           } else {
-            console.log(chalk.dim("  (no question text recorded)"));
+            logger.info(chalk.dim("  (no question text recorded)"));
           }
-          console.log(
+          logger.info(
             chalk.dim("  ─────────────────────────────────────────────"),
           );
         }
-        console.log(chalk.yellow(`\n  Answer: cortex-harness resume`));
+        logger.info(chalk.yellow(`\n  Answer: cortex-harness resume`));
       }
 
       // ── Blocked: session/weekly limit ───────────────────────────────────────
       if (limitHit.length) {
-        console.log(`\n${chalk.red("  Usage limit hit:")}`);
+        logger.info(`\n${chalk.red("  Usage limit hit:")}`);
         for (const c of limitHit) {
           const reason = c.blockedReason ?? "unknown — check your Claude plan";
-          console.log(`  ${chalk.cyan(c.id)}`);
-          console.log(wrap(reason, 4));
+          logger.info(`  ${chalk.cyan(c.id)}`);
+          logger.info(wrap(reason, 4));
         }
-        console.log(
+        logger.info(
           chalk.dim("\n  Resume after the limit resets: cortex-harness resume"),
         );
       }
 
       // ── Partial ─────────────────────────────────────────────────────────────
       if (partial.length) {
-        console.log(`\n${chalk.yellow("  Partial cycles (incomplete):")}`);
+        logger.info(`\n${chalk.yellow("  Partial cycles (incomplete):")}`);
         for (const c of partial) {
-          console.log(`  ${chalk.cyan(c.id)}`);
-          if (c.partialReason) console.log(wrap(c.partialReason, 4));
+          logger.info(`  ${chalk.cyan(c.id)}`);
+          if (c.partialReason) logger.info(wrap(c.partialReason, 4));
         }
       }
 
       // ── Pending ─────────────────────────────────────────────────────────────
       if (pending.length) {
-        console.log(`\n${chalk.dim("  Pending:")}`);
+        logger.info(`\n${chalk.dim("  Pending:")}`);
         for (const c of pending) {
           const group = c.taskGroup ? chalk.dim(` [${c.taskGroup}]`) : "";
-          console.log(`  ${chalk.dim("·")} ${chalk.cyan(c.id)}${group}`);
+          logger.info(`  ${chalk.dim("·")} ${chalk.cyan(c.id)}${group}`);
         }
       }
 
       if (!blocked.length && !pending.length && !partial.length) {
-        console.log(chalk.green("\n  All cycles complete. Run is finished."));
+        logger.info(chalk.green("\n  All cycles complete. Run is finished."));
       }
 
-      console.log();
+      logger.info();
     });
 }
