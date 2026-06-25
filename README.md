@@ -83,7 +83,7 @@ Or run without installing:
 npx cortex-harness init
 ```
 
-**Requires Node.js ≥ 20** and [Claude Code](https://claude.ai/code) CLI installed and authenticated.
+**Requires Node.js ≥ 20** and a supported agent CLI installed and authenticated — [Claude Code](https://claude.ai/code) (default) or [OpenCode](https://opencode.ai). See [§2c](#2c-switch-cli-backend) to switch backends.
 
 ---
 
@@ -250,6 +250,25 @@ cortex-harness config remove-route-param id
 cortex-harness config remove-route-param /clients/[id]
 ```
 
+### 2c. Switch CLI backend
+
+Cortex drives cycles through a pluggable CLI adapter — `claude` (default) or `opencode`. Both are scaffolded by `init` (prompt/agent templates for each live side-by-side as `.harness/prompts-opencode/` and `.harness/agents-opencode/`), so switching later doesn't require re-running `init`.
+
+```bash
+# Print the configured backend and which providers are actually installed on PATH
+cortex-harness config cli-provider
+
+# Switch backend
+cortex-harness config set-cli-provider opencode
+cortex-harness config set-cli-provider claude
+
+# Interactive wizard — pick from installed/known providers with install status shown
+cortex-harness config
+# → "CLI backend"
+```
+
+The two backends differ in cost telemetry, MCP scoping mechanism, and tool-naming convention, but `cortex-harness run`/`resume`/`status`/`logs` work identically against either — see [ARCHITECTURE.md → CLI Adapters](./ARCHITECTURE.md#cli-adapters) for the full contract.
+
 ### 3. Run
 
 ```bash
@@ -363,6 +382,7 @@ Reverts are non-destructive: a pre-run snapshot captures uncommitted work before
 
 | Field                    | Type   | Default            | Description                                                       |
 | ------------------------ | ------ | ------------------ | ----------------------------------------------------------------- |
+| `cliProvider`            | string | `claude`           | Which agent CLI backend drives cycles — `claude` or `opencode`. Managed via [§2c](#2c-switch-cli-backend) |
 | `harnessDir`             | string | `.harness`         | Root directory for all harness files                              |
 | `promptsDir`             | string | `.harness/prompts` | Cycle prompt templates                                            |
 | `agentsDir`              | string | `.harness/agents`  | Agent role definition files                                       |
@@ -412,6 +432,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     reconcile.md
     prompt-orchestration.md
     url-detector.md             ← pre-smoke URL extraction (mini-Claude session, print-only/no Write; falls back to route-scanner)
+  prompts-opencode/             ← OpenCode-flavored prompt variants, scaffolded alongside prompts/ — selected when cliProvider is "opencode"
   agents/
     backend-subagent.agent.md   ← scope sections auto-patched by cortex-harness config
     frontend-subagent.agent.md
@@ -420,6 +441,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     tester-subagent.agent.md
     explorer-subagent.agent.md
     planner-subagent.agent.md
+  agents-opencode/              ← OpenCode-flavored agent role files, same role set as agents/
   cycle-state/                  ← written at runtime (gitignored)
     skills.json                 ← skill output forwarded to implement cycles
     probe-urls.json             ← pre-smoke URL detection result (urls, dynamicUrls, layoutAffected, framework — dynamicUrls always routeParams-resolved by the engine)

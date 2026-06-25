@@ -4,7 +4,7 @@ Thanks for your interest in contributing. This guide covers everything you need 
 
 ## Architecture overview
 
-Cortex runs a deterministic state machine: each cycle spawns a `claude -p` subprocess, emits one signal (`CYCLE_COMPLETE` / `CYCLE_PARTIAL` / `NEEDS_HUMAN_INPUT`), and writes a Zod-validated JSON output file. The outer loop reads signals and advances a task queue.
+Cortex runs a deterministic state machine: each cycle spawns a CLI subprocess via the configured adapter (`src/engine/cli-adapters/` — Claude Code's `claude -p` by default, or OpenCode's `opencode run`; see [ARCHITECTURE.md → CLI Adapters](./ARCHITECTURE.md#cli-adapters)), emits one signal (`CYCLE_COMPLETE` / `CYCLE_PARTIAL` / `NEEDS_HUMAN_INPUT`), and writes a Zod-validated JSON output file. The outer loop reads signals and advances a task queue.
 
 ```mermaid
 flowchart LR
@@ -176,7 +176,8 @@ Key source files to orient yourself:
 | File | What it does |
 |---|---|
 | `src/run-autonomous.mjs` | Main loop — reads queue, dispatches cycles, handles signals, injects fix/recovery cycles |
-| `src/engine/cycle-runner.mjs` | Spawns `claude -p`, streams events, extracts signal, kills on timeout |
+| `src/engine/cycle-runner.mjs` | Spawns the cycle's CLI subprocess via the active adapter, streams events, extracts signal, kills on timeout |
+| `src/engine/cli-adapters/` | Per-CLI adapters (Claude, OpenCode) implementing a shared spawn/parse/extract contract — see `adapter-interface.mjs` and `registry.mjs` |
 | `src/engine/prompt-builder.mjs` | Assembles the full prompt for each cycle from templates + prior context |
 | `src/cycle-schemas.mjs` | Zod schemas for every cycle output file |
 | `src/snapshot.mjs` | Pre-run snapshot capture and non-destructive scope revert |
@@ -190,7 +191,7 @@ For a deep dive into the engine internals, see [ARCHITECTURE.md](./ARCHITECTURE.
 ## Prerequisites
 
 - Node.js >= 20
-- [Claude Code](https://claude.ai/code) CLI installed and authenticated (required to run integration tests against a real workspace)
+- [Claude Code](https://claude.ai/code) CLI installed and authenticated (required to run integration tests against a real workspace) — or [OpenCode](https://opencode.ai), if you're testing against the `opencode` adapter
 
 ## Setup
 
@@ -213,7 +214,8 @@ src/
     commands/              CLI command handlers (init, run, resume, status, config, chain, auth, logs)
     helpers/               Shared CLI utilities (fs-utils, surfaces, run-control, ui)
   engine/
-    cycle-runner.mjs       Spawns claude -p, streams events, extracts signal
+    cycle-runner.mjs       Spawns the active adapter's CLI subprocess, streams events, extracts signal
+    cli-adapters/          Claude / OpenCode adapters (spawn plan, event parsing, MCP scoping)
     prompt-builder.mjs     Assembles prompts from templates + prior context
     process-utils.mjs      Dev server detection (14 frameworks) and lifecycle
     smoke-orchestrator.mjs Per-URL Playwright smoke sessions with auth support

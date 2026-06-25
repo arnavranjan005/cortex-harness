@@ -6,7 +6,7 @@ This document covers the internal mechanics of `src/run-autonomous.mjs` and `bin
 
 ## Overview
 
-Cortex runs a deterministic state machine driven by a **task queue**. Every cycle runs inside a subprocess (`claude -p`), emits exactly one signal, and writes a Zod-validated JSON output file. The outer loop reads signals and advances the queue. For multi-intent tasks, the queue is decomposed into ordered groups at plan time and may be extended at runtime by the cross-group reconcile cycle.
+Cortex runs a deterministic state machine driven by a **task queue**. Every cycle runs inside a subprocess driven by the configured CLI adapter (Claude Code's `claude -p` by default, or OpenCode's `opencode run` — see [CLI Adapters](#cli-adapters)), emits exactly one signal, and writes a Zod-validated JSON output file. The outer loop reads signals and advances the queue. For multi-intent tasks, the queue is decomposed into ordered groups at plan time and may be extended at runtime by the cross-group reconcile cycle.
 
 ![Cortex runtime architecture](./cortex-harness-runtime.svg)
 
@@ -489,18 +489,18 @@ MCP servers are registered globally in `.mcp.json` but each cycle only ever sees
 
 The `config` command's interactive "MCP server scope" step reuses the same pure helpers (`serverScopeOptions()`, `scopeListsEqual()`) but drives them through a different interaction shape: pick one agent/key from a menu, edit its server checklist, loop back to the menu — mirroring the "Agent file scopes" flow rather than walking every key in sequence like the `init` auto-scope pass does.
 
-**Per-cycle resolution (`src/engine/cycle-runner.mjs`):** before spawning a cycle's Claude subprocess, `runCycle()` computes:
+**Per-cycle resolution (`src/engine/cycle-runner.mjs`):** before spawning a cycle's CLI subprocess, `runCycle()` computes:
 
 ```js
 const mcpKey = cycle.agent ?? cycle.type ?? null;
 let filteredServers = buildFilteredMcpServers(mcpKey);
 ```
 
-`buildFilteredMcpServers()` (`src/engine/process-utils.mjs`) unions `mcpScope["*"]` with `mcpScope[mcpKey]`, looks those names up in `.mcp.json`, and returns the matching server entries — or `null` if `mcpScope` isn't configured at all (meaning no filtering; every registered server loads). The result is written to a throwaway `tmp-mcp-<cycle.id>.json` and the cycle's subprocess is launched with `--mcp-config <that file>` instead of the project's `.mcp.json`, so each cycle is isolated to exactly its own allowed set.
+`buildFilteredMcpServers()` (`src/engine/process-utils.mjs`) unions `mcpScope["*"]` with `mcpScope[mcpKey]`, looks those names up in `.mcp.json`, and returns the matching server entries — or `null` if `mcpScope` isn't configured at all (meaning no filtering; every registered server loads). What happens to that filtered set next depends on the active adapter's `mcpScopeMechanism` (see [CLI Adapters](#cli-adapters)): for Claude (`"flag"`) it's written to a throwaway `tmp-mcp-<cycle.id>.json` and passed via `--mcp-config <that file>` instead of the project's `.mcp.json`; for OpenCode (`"config-file"`) it's translated and written to a similar disposable temp file but applied via the `OPENCODE_CONFIG` env var instead, with denied servers omitted from the file entirely rather than flagged off. Either way each cycle ends up isolated to exactly its own allowed set.
 
 This same resolved set feeds the dev-server auto-start check (see below) — `hasBrowserMcp(filteredServers)` runs against whatever this cycle actually has access to, not the full server list.
 
-**Tool usage attribution (`cortex-harness mcp usage`):** Claude Code names every MCP tool call `mcp__<server>__<tool>`. `attributeTools()` (`src/cli/commands/mcp.mjs`) parses that prefix directly instead of matching against a hardcoded per-server regex, so a server invented after this file was written still attributes correctly with zero code changes. Non-built-in, non-`mcp__`-prefixed tool names fall into an "unregistered server" bucket as a sign something doesn't conform to the convention.
+**Tool usage attribution (`cortex-harness mcp usage`):** `attributeTools()` (`src/cli/commands/mcp.mjs`) branches on the active adapter's naming convention. Claude Code names every MCP tool call `mcp__<server>__<tool>` — that fixed prefix is parsed directly, so a server invented after this file was written still attributes correctly with zero code changes. OpenCode has no such marker (confirmed live its convention is `<server>_<tool>` with no prefix at all), so for OpenCode the only reliable signal is matching a tool name's prefix against `registeredServerNames` pulled from `.mcp.json`. Non-built-in tool names that don't match either convention fall into an "unregistered server" bucket as a sign something doesn't conform.
 
 **Surfacing unscoped servers:** the bare `cortex-harness mcp` command cross-references `.mcp.json` against `mcpScope` and flags any server with zero entries anywhere — the case where someone added a server directly to `.mcp.json` by hand (bypassing `mergeMcpConfig`/auto-scope entirely, since that flow only ever sees servers it itself just wrote).
 
@@ -652,13 +652,45 @@ Smoke failures (after all fix retries exhausted) are treated as **residual risks
 
 ---
 
-## Windows Spawning
+## CLI Adapters
+
+`src/engine/cli-adapters/` lets `cycle-runner.mjs` and `smoke-orchestrator.mjs` drive any agent CLI without assuming Claude Code's executable, flags, or stream-json event schema directly. `adapter-interface.mjs` is the JSDoc-only contract (no runtime code) every adapter implements; `registry.mjs` maps a `cliProvider` config string (`"claude"` default, or `"opencode"`) to its adapter module via `resolveAdapter(cliProvider)`, and exposes `listProviders()` / `isProviderInstalled(provider)` (a best-effort `where.exe`/`command -v` PATH check, not a deep health check) for the `config cli-provider` / `set-cli-provider` commands.
+
+An adapter must implement:
+
+| Member | Purpose |
+|---|---|
+| `resolveExecutable()` | Resolve the full path (or bare command) for this CLI, cached by the adapter module itself, called once per process |
+| `buildSpawnPlan({ prompt, cycle, budgetUsd, mcpConfigPath, promptFile, isWindows })` | Build the `{ command, args, psContent?, env? }` needed to run one cycle |
+| `parseEventLine(line)` | Parse one stdout line into this CLI's raw event shape, or `null` if unparseable |
+| `extractResult(event)` | Normalize a raw event into `{ kind, costUsd?, numTurns?, finalMessage?, isError?, text? }` — `kind` is one of `turn`/`tool_result`/`final`/`rate_limit`/`stream_error`/`unknown`, and is what `cycle-runner.mjs` actually switches on |
+| `detectRateLimit(message)` | Detect a rate-limit/usage-limit condition from accumulated text output |
+| `mcpToolName(server, tool)` / `mcpServerWildcard(server)` | Optional — format an addressable tool/wildcard name in this CLI's own convention (Claude: `mcp__playwright__browser_navigate` / `mcp__playwright__*`; OpenCode: `playwright_browser_navigate` / `playwright_*`); only needed by adapters used in smoke prompts |
+| `buildSmokeCheckSpawnPlan(...)` | Optional — spawn plan for a smoke-check sub-session distinct from the main cycle shape (MCP-restricted, mostly-text, its own turn/budget cap) |
+| `capabilities` | `{ supportsMcp, supportsCostTelemetry, supportsStreamEvents, mcpScopeMechanism }` — see below |
+
+**`mcpScopeMechanism`** is why MCP scoping (see [MCP Server Scoping](#mcp-server-scoping)) isn't a single code path across adapters — the two backends have genuinely different ways of restricting a subprocess's MCP access, not just "on vs. off":
+
+- `"flag"` (Claude) — a disposable per-invocation config file passed via `--mcp-config`, written before spawn and deleted after.
+- `"config-file"` (OpenCode) — no CLI flag exists; the same disposable-temp-file lifecycle is instead applied via an environment variable (`OPENCODE_CONFIG`), confirmed live to merge with the project's real `opencode.json` without overwriting keys that file doesn't set, and to never touch that file on disk. Adapters using this mechanism export a `buildScopedConfig({ ROOT, allowedServerNames, cycleId, tmpDir })` and return an `env` field from `buildSpawnPlan`.
+- `"none"` — no scoping mechanism at all; `cycle-runner.mjs` skips MCP-related work entirely for that adapter.
+
+**OpenCode's MCP config is deny-by-omission**, not deny-by-flag (`opencode-mcp-config.mjs`): only servers in `allowedServerNames` are translated and written under the config's `mcp` key at all — a denied server is never registered with the OpenCode process, rather than registered-and-denied via a top-level `tools[]` map. The latter was the original implementation; it was changed after confirming against OpenCode's own issue tracker (`anomalyco/opencode#3612`) that a top-level `tools` deny entry is silently ignored, which meant every cycle had full access to every MCP server regardless of `mcpScope`. The config file is always written, even when `allowedServerNames` is empty (`{"mcp":{}}`) — a same-shaped artifact on disk for every cycle that reached this function, rather than overloading "no file" to mean both "nothing allowed" and "function never ran."
+
+**Cost telemetry and tool-naming genuinely differ** between adapters — `supportsCostTelemetry` is true for both currently, but OpenCode reports `costUsd` per "turn" event (accumulated by the caller) rather than Claude's single final-cost event, and its MCP tool names use `server_tool` (underscore) instead of Claude's `mcp__server__tool` convention. Callers that format prose referencing a specific tool (smoke prompts) must go through `mcpToolName`/`mcpServerWildcard` rather than hardcoding either convention.
+
+### Windows Spawning
 
 On Windows, Cortex avoids shell quote-handling issues with long prompts by:
 
 1. Writing the full cycle prompt to a UTF-8 `.txt` temp file in `.harness/runs/`
 2. Generating a `.ps1` wrapper script that reads and passes the file
 3. Spawning `powershell.exe` to execute the wrapper
+
+The two adapters deliver that file to the CLI process differently:
+
+- **Claude** (`claude-adapter.mjs`) reads the prompt file into a PowerShell variable and passes it as an array element to `&`.
+- **OpenCode** (`opencode-adapter.mjs`) pipes the prompt file straight into the process's stdin (`Get-Content ... | & "<exe>" run --format json`) rather than passing it as a positional argument. An earlier version used the same variable-substitution shape as Claude's adapter; that was changed after a real production failure: a 23KB reconcile-cycle prompt containing a JSON report template with several adjacent `""` pairs reproducibly made PowerShell's `&`-operator argument reconstruction hand `opencode.exe` a malformed command line. The process exited `0` having only printed its own `--help` banner — never having seen the real message — which surfaced upstream as an unexplained "0-turn silent failure." Bisection narrowed the trigger to quote density, not prompt length (a 20KB prompt with no JSON-style quoting passed through the old wrapper fine). Piping via stdin sidesteps PowerShell's argument reconstruction entirely, since the prompt content never becomes part of the command line. On non-Windows, both adapters still pass the prompt as a positional argument — Node's `spawn()` there uses `argv` directly with no shell involved, so this class of bug doesn't apply.
 
 ### Resolving the `claude` executable (`src/engine/claude-exe.mjs`)
 
@@ -673,6 +705,6 @@ To avoid this, `resolveClaudeExe()` runs once per process (Windows only — non-
 
 The resolved value is cached as the exported `CLAUDE_EXE` constant and reused for every `.ps1` script generated for the lifetime of that process — it is **not** re-resolved per cycle, and **not** persisted to disk; it lives only in that process's memory, and a fresh `cortex-harness run`/`resume` re-resolves from scratch.
 
-`src/engine/cycle-runner.mjs`, `src/run-autonomous.mjs`, and `src/cli/helpers/chain-task.mjs` all import `CLAUDE_EXE` from this single module rather than each resolving it independently — this used to be three separate copies of the same logic before being consolidated.
+`src/engine/cycle-runner.mjs`, `src/run-autonomous.mjs`, and `src/cli/helpers/chain-task.mjs` all import `CLAUDE_EXE` from this single module rather than each resolving it independently — this used to be three separate copies of the same logic before being consolidated. OpenCode's executable is resolved independently by `opencode-adapter.mjs`'s own `resolveExecutable()`, following the same `.cmd`-shim-preference logic but cached separately — the two adapters never share resolution state.
 
 Covered by `tests/engine/claude-exe.test.mjs` (non-Windows fast path, `.cmd` preference, retry-then-success, exhausted-retries-and-warn).
