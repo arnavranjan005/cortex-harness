@@ -150,3 +150,44 @@ describe('opencodeAdapter.extractResult — against real captured `opencode run 
     });
   });
 });
+
+describe('opencodeAdapter.buildSpawnPlan — Windows prompt delivery', () => {
+  // Regression coverage for a real production bug: passing the prompt as a
+  // positional CLI argument through PowerShell's `&` operator (via a
+  // generated .ps1, same shape Claude's adapter uses for its other args)
+  // silently corrupted certain real prompts — specifically ones containing a
+  // JSON template with several adjacent `""` pairs (e.g. a reconcile cycle's
+  // report schema). PowerShell would hand opencode.exe a malformed command
+  // line; the process exited 0 having only printed its own --help banner,
+  // never having seen the real message — surfaced upstream as a "0-turn
+  // silent failure" with no error. Confirmed live (bisecting the failing
+  // prompt, then reproducing/fixing against the exact same prompt) that
+  // routing the prompt through stdin instead — mirroring claude-adapter.mjs's
+  // existing Windows wrapper exactly — avoids PowerShell's argument
+  // reconstruction entirely, since the content never becomes part of the
+  // command line.
+  test('on Windows, pipes the prompt via stdin (Get-Content | &) rather than as a positional argument', () => {
+    const plan = opencodeAdapter.buildSpawnPlan({
+      prompt: 'irrelevant once piped — must not appear as a positional arg',
+      isWindows: true,
+      promptFile: 'C:\\fake\\prompt.txt',
+      mcpConfigPath: null,
+    });
+
+    expect(plan.command).toBe('powershell.exe');
+    expect(plan.psContent).toContain('Get-Content -Path "C:\\fake\\prompt.txt" -Raw -Encoding UTF8 |');
+    expect(plan.psContent).not.toContain('$prompt');
+    expect(plan.psContent).not.toContain('irrelevant once piped');
+  });
+
+  test('on non-Windows, the prompt still travels as a positional argument (Node spawn() argv has no quoting bug)', () => {
+    const plan = opencodeAdapter.buildSpawnPlan({
+      prompt: 'a prompt with "quotes" and -- dashes',
+      isWindows: false,
+      mcpConfigPath: null,
+    });
+
+    expect(plan.command).not.toBe('powershell.exe');
+    expect(plan.args).toEqual(['run', 'a prompt with "quotes" and -- dashes', '--format', 'json']);
+  });
+});

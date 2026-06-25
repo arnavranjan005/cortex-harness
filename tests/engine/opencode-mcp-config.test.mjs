@@ -49,13 +49,14 @@ describe('buildScopedOpenCodeConfigFile', () => {
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  test('returns null when .mcp.json does not exist', () => {
+  test('still writes a file (with empty mcp) when .mcp.json does not exist', () => {
     dir = makeTmpDir('oc-mcp-nomcp');
     const result = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: ['playwright'], cycleId: 'c1', tmpDir: dir });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(JSON.parse(readFileSync(result, 'utf8'))).toEqual({ mcp: {} });
   });
 
-  test('writes a disposable temp file containing only mcp + tools, never touching opencode.json', () => {
+  test('writes a disposable temp file containing only allowed servers under mcp, never touching opencode.json', () => {
     dir = makeTmpDir('oc-mcp-create');
     writeFileSync(join(dir, '.mcp.json'), JSON.stringify({
       mcpServers: {
@@ -70,10 +71,12 @@ describe('buildScopedOpenCodeConfigFile', () => {
     expect(existsSync(join(dir, 'opencode.json'))).toBe(false);
 
     const written = JSON.parse(readFileSync(tmpPath, 'utf8'));
-    expect(written.tools['playwright*']).toBe(true);
-    expect(written.tools['slack*']).toBe(false);
+    expect(written.tools).toBeUndefined();
     expect(written.mcp.playwright.type).toBe('local');
-    expect(written.mcp.slack.type).toBe('local');
+    // Denied server is omitted entirely — not registered at all, not just
+    // denied via a tools flag (OpenCode ignores top-level tools denies —
+    // see anomalyco/opencode#3612 — so omission is the only enforcement that works).
+    expect(written.mcp.slack).toBeUndefined();
   });
 
   test('never reads or modifies an existing opencode.json', () => {
@@ -90,7 +93,7 @@ describe('buildScopedOpenCodeConfigFile', () => {
     expect(stillThere).toEqual(priorConfig);
   });
 
-  test('denies every server not in allowedServerNames', () => {
+  test('omits every server not in allowedServerNames from the mcp block entirely', () => {
     dir = makeTmpDir('oc-mcp-deny');
     writeFileSync(join(dir, '.mcp.json'), JSON.stringify({
       mcpServers: {
@@ -102,25 +105,42 @@ describe('buildScopedOpenCodeConfigFile', () => {
 
     const tmpPath = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: ['github'], cycleId: 'c1', tmpDir: dir });
     const written = JSON.parse(readFileSync(tmpPath, 'utf8'));
-    expect(written.tools).toEqual({
-      'playwright*': false,
-      'slack*': false,
-      'github*': true,
-    });
+    expect(Object.keys(written.mcp)).toEqual(['github']);
+    expect(written.mcp.playwright).toBeUndefined();
+    expect(written.mcp.slack).toBeUndefined();
+  });
+
+  test('writes an empty mcp:{} file (not null) when allowedServerNames is empty — debuggable, but still effectively no MCP access', () => {
+    dir = makeTmpDir('oc-mcp-zero-allowed');
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({
+      mcpServers: {
+        playwright: { command: 'npx', args: ['playwright'] },
+        shadcn: { command: 'npx', args: ['shadcn-mcp'] },
+      },
+    }));
+
+    const tmpPath = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: [], cycleId: 'explore', tmpDir: dir });
+    expect(tmpPath).not.toBeNull();
+    expect(JSON.parse(readFileSync(tmpPath, 'utf8'))).toEqual({ mcp: {} });
   });
 
   test('uses a cycle-unique filename so parallel cycles never collide', () => {
     dir = makeTmpDir('oc-mcp-parallel');
     writeFileSync(join(dir, '.mcp.json'), JSON.stringify({
-      mcpServers: { playwright: { command: 'npx', args: ['playwright'] } },
+      mcpServers: {
+        playwright: { command: 'npx', args: ['playwright'] },
+        slack: { command: 'npx', args: ['slack-mcp'] },
+      },
     }));
 
     const pathA = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: ['playwright'], cycleId: 'implement-backend', tmpDir: dir });
-    const pathB = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: [], cycleId: 'implement-frontend', tmpDir: dir });
+    const pathB = buildScopedOpenCodeConfigFile({ ROOT: dir, allowedServerNames: ['slack'], cycleId: 'implement-frontend', tmpDir: dir });
 
     expect(pathA).not.toEqual(pathB);
-    expect(JSON.parse(readFileSync(pathA, 'utf8')).tools['playwright*']).toBe(true);
-    expect(JSON.parse(readFileSync(pathB, 'utf8')).tools['playwright*']).toBe(false);
+    expect(JSON.parse(readFileSync(pathA, 'utf8')).mcp.playwright).toBeDefined();
+    expect(JSON.parse(readFileSync(pathA, 'utf8')).mcp.slack).toBeUndefined();
+    expect(JSON.parse(readFileSync(pathB, 'utf8')).mcp.slack).toBeDefined();
+    expect(JSON.parse(readFileSync(pathB, 'utf8')).mcp.playwright).toBeUndefined();
   });
 
   test('merges additionalServers with .mcp.json servers (e.g. in-memory auth-profile servers)', () => {
@@ -141,10 +161,8 @@ describe('buildScopedOpenCodeConfigFile', () => {
 
     const written = JSON.parse(readFileSync(tmpPath, 'utf8'));
     expect(written.mcp['playwright-work'].command).toEqual(['npx', '-y', '@playwright/mcp@latest', '--storage-state=/tmp/work.json']);
-    expect(written.tools['playwright-work*']).toBe(true);
-    // The disk-registered server is still present and correctly denied (not in allowedServerNames).
-    expect(written.mcp.playwright).toBeDefined();
-    expect(written.tools['playwright*']).toBe(false);
+    // The disk-registered server is not in allowedServerNames, so it's omitted entirely.
+    expect(written.mcp.playwright).toBeUndefined();
   });
 
   test('works with only additionalServers, no .mcp.json on disk at all', () => {
@@ -161,6 +179,6 @@ describe('buildScopedOpenCodeConfigFile', () => {
 
     expect(tmpPath).not.toBeNull();
     const written = JSON.parse(readFileSync(tmpPath, 'utf8'));
-    expect(written.tools['playwright-work*']).toBe(true);
+    expect(written.mcp['playwright-work']).toBeDefined();
   });
 });

@@ -980,11 +980,28 @@ async function main() {
         writeQueue(queue);
         appendSessionCycle(`[autonomous] ${cycle.id}`, "blocked", cycle.blockedReason.slice(0, 200));
 
+        let isAuthIssue = false;
+        if (cycle.outputFile) {
+          try {
+            isAuthIssue = !!JSON.parse(readCycleState(cycle.outputFile)).authIssue;
+          } catch { /* output file missing or unreadable */ }
+        }
+        // Matches the provider-outage message smoke-orchestrator.mjs produces —
+        // same rationale as auth: there's no text answer that fixes a CLI
+        // provider outage, so don't imply one is expected.
+        const isProviderOutage = /^Smoke check got no output from the CLI provider on/.test(questionText);
+
         logger.info(`\n${chalk.red.bold("[BLOCKED]")} ${chalk.cyan(cycle.id)} needs human input.`);
         logger.info(chalk.dim("  ─────────────────────────────────────────────"));
         for (const line of questionText.split("\n")) logger.info(`  ${line}`);
         logger.info(chalk.dim("  ─────────────────────────────────────────────"));
-        logger.info(chalk.yellow('  Answer: cortex-harness resume "your answer"'));
+        logger.info(
+          isAuthIssue
+            ? chalk.yellow("  Then run: cortex-harness resume  (no answer needed — it re-checks auth live)")
+            : isProviderOutage
+            ? chalk.yellow("  Then run: cortex-harness resume  (no answer needed — it re-runs the smoke check live)")
+            : chalk.yellow('  Answer: cortex-harness resume "your answer"'),
+        );
 
         notify("Claude — Needs Input", questionText.slice(0, 100), {
           event: "needs-human-input", cycleId: cycle.id,

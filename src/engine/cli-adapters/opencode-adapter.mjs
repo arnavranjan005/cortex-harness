@@ -65,13 +65,13 @@ function resolveExecutable() {
 
 const OPENCODE_EXE = resolveExecutable();
 
-// NOTE: unlike Claude (`-p` with no value reads the prompt from stdin),
-// OpenCode's `run` subcommand takes the message as a positional argument —
-// confirmed live (`opencode run "<message>" --format json`). Long/multi-line
-// prompts on Windows have not been verified through this path yet; if shell
-// quoting turns out to be an issue the same write-to-file approach used for
-// Claude's PowerShell wrapper would need a stdin-capable invocation, which
-// is unconfirmed for `opencode run` as of this writing.
+// OpenCode's `run` subcommand takes the message as a positional argument by
+// default (confirmed live: `opencode run "<message>" --format json`) — but
+// confirmed live it *also* reads the message from stdin when the positional
+// is omitted (undocumented in `opencode run --help`, but real: piping text
+// in and leaving the positional empty produces a session that responds to
+// that piped text, not an empty/no-op one). That stdin path is what this
+// adapter uses on Windows, for the same reason Claude's adapter does.
 //
 // No `--agent <name>` flag — confirmed live this was dead code: an
 // unregistered agent name (every Cortex agent name, always) silently falls
@@ -88,16 +88,29 @@ const OPENCODE_EXE = resolveExecutable();
 // that file on disk. This is what makes per-cycle MCP scoping safe for
 // parallel cycles: each cycle's env var points at its own disposable file
 // (see opencode-mcp-config.mjs), never a shared one.
-// On Windows, the prompt is read from `promptFile` into a PowerShell
-// variable and passed as an array element (`& exe run $prompt ...`) rather
-// than interpolated into a quoted string literal — confirmed live that
-// naive `"${prompt}"` interpolation breaks the PowerShell parser for any
-// multi-line/markdown prompt (real task prompts routinely contain lines
-// starting with "-", embedded double-quotes, etc., which either close the
-// quoted literal early or get parsed as PowerShell operators/statements).
-// `opencode run`'s positional message arg has no stdin alternative
-// (confirmed via `opencode run --help`), so the value still has to reach it
-// as a real argument — just never as literal text inside the .ps1 file.
+//
+// On Windows, the prompt now goes in via stdin (`Get-Content ... | & exe run
+// --format json`), mirroring claude-adapter.mjs's wrapper exactly, rather
+// than as a positional argument. An earlier version passed it as a
+// positional via `& exe run $prompt --format json` (PowerShell variable
+// substitution). Confirmed live this silently corrupts certain real prompts:
+// a 23KB reconcile-cycle prompt containing a JSON report template with
+// several adjacent `""` pairs and quoted multi-intent markers reproducibly
+// made PowerShell's `&`-operator argument reconstruction hand opencode.exe a
+// malformed command line — the process exited fine (code 0) but never saw
+// the actual message, it just printed its own --help banner, which the
+// harness then misreported as a "0-turn silent failure". Smaller/simpler
+// prompts went through unaffected, which is what made this so easy to miss
+// — it's a PowerShell native-argument quoting defect tied to quote density,
+// not prompt length (confirmed by bisecting the failing prompt down to a
+// ~1.3KB minimal repro, while a 20KB prompt with no JSON-style quoting in it
+// passed through the old positional-arg wrapper without issue). Piping via
+// stdin sidesteps PowerShell's argument-quoting entirely — the content never
+// becomes part of the command line, so there's nothing for `&` to
+// mis-escape, confirmed live against the exact previously-failing prompt.
+// On non-Windows, the prompt stays a positional argument, same as before —
+// Node's spawn() there uses argv directly (no shell, no string
+// reconstruction), which never had this problem.
 function buildSpawnPlan({ prompt, isWindows: win, mcpConfigPath, promptFile }) {
   const args = ["run", prompt, "--format", "json"];
   const env = mcpConfigPath ? { OPENCODE_CONFIG: mcpConfigPath } : undefined;
@@ -106,7 +119,7 @@ function buildSpawnPlan({ prompt, isWindows: win, mcpConfigPath, promptFile }) {
     return {
       command: "powershell.exe",
       args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "__PS_FILE__"],
-      psContent: `$prompt = Get-Content -Path "${promptFile}" -Raw -Encoding UTF8\n& "${OPENCODE_EXE}" run $prompt --format json\n`,
+      psContent: `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${OPENCODE_EXE}" run --format json\n`,
       env,
     };
   }
@@ -136,7 +149,7 @@ function buildSmokeCheckSpawnPlan({ prompt, mcpConfigPath, isWindows: win, promp
     return {
       command: "powershell.exe",
       args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "__PS_FILE__"],
-      psContent: `$prompt = Get-Content -Path "${promptFile}" -Raw -Encoding UTF8\n& "${OPENCODE_EXE}" run $prompt --format json\n`,
+      psContent: `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${OPENCODE_EXE}" run --format json\n`,
       env,
       outputFormat: "json-stream",
     };
@@ -157,7 +170,7 @@ function buildSummarySpawnPlan({ prompt, isWindows: win, promptFile }) {
     return {
       command: "powershell.exe",
       args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "__PS_FILE__"],
-      psContent: `$prompt = Get-Content -Path "${promptFile}" -Raw -Encoding UTF8\n& "${OPENCODE_EXE}" run $prompt --format json\n`,
+      psContent: `Get-Content -Path "${promptFile}" -Raw -Encoding UTF8 | & "${OPENCODE_EXE}" run --format json\n`,
       outputFormat: "json-stream",
     };
   }

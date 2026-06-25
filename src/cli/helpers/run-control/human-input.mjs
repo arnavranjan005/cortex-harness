@@ -19,10 +19,37 @@ export async function resumeBlockedCycles(cwd) {
   }
 
   const blocked = (queue.cycles ?? []).filter((c) => c.status === "blocked");
-  const needsInput = blocked.filter((c) => c.blockedType === "needs-human-input");
+  const allNeedsInput = blocked.filter((c) => c.blockedType === "needs-human-input");
   const sessionLimit = blocked.filter((c) => c.blockedType === "session-limit");
 
   if (!blocked.length) return "nothing-blocked";
+
+  // Matches the exact phrasing buildAuthBlockMessage() / the provider-outage
+  // message produce in smoke-orchestrator.mjs — kept as a fallback since
+  // blockedReason lives in task-queue.json itself (always present) whereas
+  // the cycle-state output file can be absent by resume time (cleared by a
+  // later retry, etc).
+  const AUTH_BLOCK_PATTERN = /^(Auth session expired for:|Auth state missing for profiles:|Pages require login but no auth state found\.)/;
+  const PROVIDER_OUTAGE_PATTERN = /^Smoke check got no output from the CLI provider on/;
+
+  // Auth-blocked and provider-outage smoke cycles never get a Q&A prompt —
+  // there's no useful text answer for either ("logged in" / "provider's back
+  // up" aren't decisions, they're external state) — just re-run the smoke
+  // check live instead of guessing from filenames/mtimes whether it's fixed.
+  // The smoke cycle itself re-validates the real state far more reliably
+  // than any precondition check could from outside it.
+  const autoRetryBlocked = allNeedsInput.filter((c) => {
+    if (c.outputFile) {
+      try {
+        const cycleStatePath = path.join(cwd, ".harness", "cycle-state", c.outputFile);
+        const data = JSON.parse(fs.readFileSync(cycleStatePath, "utf8"));
+        if (data.authIssue) return true;
+      } catch { /* file missing/unreadable — fall through to blockedReason check */ }
+    }
+    const reason = c.blockedReason ?? "";
+    return AUTH_BLOCK_PATTERN.test(reason) || PROVIDER_OUTAGE_PATTERN.test(reason);
+  });
+  const needsInput = allNeedsInput.filter((c) => !autoRetryBlocked.includes(c));
 
   if (!needsInput.length) {
     for (const c of blocked) {
@@ -32,7 +59,7 @@ export async function resumeBlockedCycles(cwd) {
       delete c.blockedAt;
     }
     fs.writeFileSync(queueFile, JSON.stringify(queue, null, 2), "utf8");
-    logger.info(chalk.dim(`  Marked ${blocked.length} session-limit cycle(s) for retry.`));
+    logger.info(chalk.dim(`  Marked ${blocked.length} cycle(s) for retry (session-limit / auth re-check).`));
     return "session-limit-only";
   }
 
@@ -49,7 +76,14 @@ export async function resumeBlockedCycles(cwd) {
   const cycleAnswerDir = path.join(cwd, ".harness", "cycle-state");
   const answersFile = path.join(cycleAnswerDir, "human-answers.json");
   const decisions = [];
-  const preconditionFailed = []; // cycles whose preconditions are not yet met
+
+  if (autoRetryBlocked.length) {
+    logger.info(chalk.dim(`  ${autoRetryBlocked.length} auth/provider-blocked smoke cycle(s) will re-run live — no input needed.`));
+    for (const c of autoRetryBlocked) {
+      const answer = PROVIDER_OUTAGE_PATTERN.test(c.blockedReason ?? "") ? "provider-retry" : "auth-retry";
+      decisions.push({ cycleId: c.id, questions: [], answer });
+    }
+  }
 
   for (let i = 0; i < needsInput.length; i++) {
     const c = needsInput[i];
@@ -57,79 +91,6 @@ export async function resumeBlockedCycles(cwd) {
     logger.info(
       `\n  ${chalk.bold(`[${i + 1}/${needsInput.length}]`)} ${chalk.cyan(c.id)}  ${chalk.dim(`(${c.type})`)}\n`,
     );
-
-    // Auth-block precondition check — validate smoke-auth.json exists before re-queuing.
-    // Doing this here (not in the smoke cycle) avoids burning a full Claude cycle just
-    // to re-detect the same missing file.
-    if (c.outputFile) {
-      try {
-        const cycleStatePath = path.join(cwd, ".harness", "cycle-state", c.outputFile);
-        const data = JSON.parse(fs.readFileSync(cycleStatePath, "utf8"));
-        if (data.authIssue) {
-          const missingProfiles = data.missingProfiles ?? [];
-          const staleProfiles = data.staleProfiles ?? [];
-
-          if (data.authIssue === "stale") {
-            // Stale = session expired. Auto-validate by checking mtime — if the auth file was
-            // written after the cycle was blocked, the user has already re-run auth.
-            const blockedAt = c.blockedAt ? new Date(c.blockedAt).getTime() : 0;
-            const stillStale = staleProfiles.filter(name => {
-              const file = path.join(cwd, ".harness", `smoke-auth-${name}.json`);
-              try { return fs.statSync(file).mtimeMs <= blockedAt; } catch { return true; }
-            });
-
-            if (stillStale.length > 0) {
-              logger.info(chalk.yellow(`  ⚠ Auth session expired for profile(s): ${stillStale.join(", ")}`));
-              for (const name of stillStale) {
-                logger.info(chalk.cyan(`    cortex-harness auth --profile ${name}`));
-              }
-              logger.info(chalk.dim("  Re-run the command(s) above, then run `cortex-harness resume` again."));
-              preconditionFailed.push(c);
-              continue;
-            }
-
-            logger.info(chalk.green(`  ✓ Auth profiles refreshed (${staleProfiles.join(", ")}) — re-queuing.`));
-            decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
-            continue;
-          }
-
-          // authIssue === "missing": validate by file existence
-          const isSingleProfile = missingProfiles.length === 0;
-
-          if (isSingleProfile) {
-            const authFile = path.join(cwd, ".harness", "smoke-auth.json");
-            if (!fs.existsSync(authFile)) {
-              logger.info(chalk.red("  ✗ smoke-auth.json not found."));
-              logger.info(chalk.yellow(`  Run ${chalk.bold("cortex-harness auth")} first, then run resume again.`));
-              preconditionFailed.push(c);
-              continue;
-            }
-            logger.info(chalk.green("  ✓ smoke-auth.json found — re-queuing."));
-            decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
-            continue;
-          }
-
-          const stillMissing = missingProfiles.filter(name => {
-            const file = path.join(cwd, ".harness", `smoke-auth-${name}.json`);
-            return !fs.existsSync(file);
-          });
-
-          if (stillMissing.length > 0) {
-            logger.info(chalk.red(`  ✗ Missing auth state for: ${stillMissing.join(", ")}`));
-            for (const name of stillMissing) {
-              logger.info(chalk.yellow(`  Run ${chalk.bold(`cortex-harness auth --profile ${name}`)}`));
-            }
-            logger.info(chalk.yellow("  Then run `cortex-harness resume` again."));
-            preconditionFailed.push(c);
-            continue;
-          }
-
-          logger.info(chalk.green(`  ✓ All auth profiles present (${missingProfiles.join(", ")}) — re-queuing.`));
-          decisions.push({ cycleId: c.id, questions: [], answer: "auth-state-ready" });
-          continue;
-        }
-      } catch { /* output file missing or unreadable — fall through to normal flow */ }
-    }
 
     let questionText = c.blockedReason ?? "";
     if (questionText.length < 350 && c.outputFile) {
@@ -187,17 +148,9 @@ export async function resumeBlockedCycles(cwd) {
     });
   }
 
-  // Cycles that can be re-queued (answered + auth-ready, excluding precondition failures)
-  const readyToResume = [...needsInput, ...sessionLimit].filter(
-    (c) => !preconditionFailed.includes(c),
-  );
-
-  if (!readyToResume.length && preconditionFailed.length) {
-    logger.info(SEP);
-    logger.info(chalk.yellow(`\n  ${preconditionFailed.length} cycle(s) still blocked — preconditions not met.`));
-    logger.info(chalk.dim("  Resolve the issues above, then run `cortex-harness resume` again."));
-    return "nothing-blocked"; // caller will not start the run
-  }
+  // Cycles that can be re-queued: answered questions, session-limit retries, and
+  // auth/provider-outage-blocked smoke cycles (always re-run live, no precondition gate).
+  const readyToResume = [...needsInput, ...sessionLimit, ...autoRetryBlocked];
 
   fs.mkdirSync(cycleAnswerDir, { recursive: true });
   const existing = fs.existsSync(answersFile)
@@ -219,13 +172,11 @@ export async function resumeBlockedCycles(cwd) {
 
   const resumedCount = readyToResume.length;
   logger.info(chalk.green(`  Answers saved. Marked ${resumedCount} cycle(s) for retry.`));
-  if (preconditionFailed.length) {
-    logger.info(chalk.yellow("  " + preconditionFailed.length + " cycle(s) still blocked — run `cortex-harness resume` again after resolving."));
+  if (sessionLimit.length) {
+    logger.info(chalk.yellow(`\n  Session-limit cycle(s) will also retry — no answer needed.`));
   }
-  if (sessionLimit.length && readyToResume.some((c) => c.blockedType === "session-limit")) {
-    logger.info(
-      chalk.yellow(`\n  Session-limit cycle(s) will also retry — no answer needed.`),
-    );
+  if (autoRetryBlocked.length) {
+    logger.info(chalk.yellow(`  Auth/provider-blocked smoke cycle(s) will re-run live — no answer needed.`));
   }
 
   return "answered";

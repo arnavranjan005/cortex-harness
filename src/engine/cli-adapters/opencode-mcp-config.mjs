@@ -29,11 +29,20 @@ export function translateMcpServers(mcpServers) {
   return translated;
 }
 
-// Writes a disposable, cycle-unique config file containing only `mcp` (every
-// server registered in .mcp.json, translated) and `tools["<server>*"]` set to
-// true for servers in allowedServerNames and false for everything else —
-// confirmed live that a global false cascades to every agent unless
-// overridden, so this is a complete allow/deny set, not a partial patch.
+// Writes a disposable, cycle-unique config file containing only `mcp` entries
+// for servers in allowedServerNames — denied servers are omitted entirely,
+// never translated, never registered. This mirrors Claude's --mcp-config
+// behavior exactly: an unauthorized server isn't loaded into the process at
+// all, so there's nothing for the model to see or call.
+//
+// Earlier version of this function registered every server from .mcp.json
+// (enabled: true) and tried to deny the unauthorized ones via a top-level
+// `tools["<server>*"]: false` map. Confirmed against OpenCode's own issue
+// tracker (anomalyco/opencode#3612 — "Option to deny MCP tools by default")
+// that a top-level `tools` deny entry is silently ignored by OpenCode; only
+// per-agent tools/permission config is honored. That meant every cycle had
+// full access to every MCP server regardless of mcpScope — denial-by-omission
+// (this version) sidesteps the broken field entirely instead of depending on it.
 //
 // This is passed to the spawned process via the OPENCODE_CONFIG environment
 // variable (confirmed live: OpenCode merges it with the project's real
@@ -54,9 +63,12 @@ export function translateMcpServers(mcpServers) {
 // nothing, since this function's only source of server definitions used to
 // be .mcp.json itself.
 //
-// Returns the temp file path, or null if there's nothing to scope (caller
-// should omit OPENCODE_CONFIG entirely in that case). Caller is responsible
-// for deleting the file after the process closes.
+// Always writes the temp file, even when permittedServers ends up empty
+// (`{"mcp":{}}`) — deliberate, for consistency and debugging: every cycle
+// that reaches this function leaves a same-shaped artifact on disk showing
+// exactly what it was scoped to, rather than "no file" being overloaded to
+// mean both "nothing allowed" and "function never ran". Caller is
+// responsible for deleting the file after the process closes.
 export function buildScopedOpenCodeConfigFile({ ROOT, allowedServerNames, cycleId, tmpDir, additionalServers }) {
   const mcpPath = join(ROOT, ".mcp.json");
   let diskServers = {};
@@ -69,16 +81,15 @@ export function buildScopedOpenCodeConfigFile({ ROOT, allowedServerNames, cycleI
   }
 
   const allServers = { ...diskServers, ...(additionalServers ?? {}) };
-  const translatedMcp = translateMcpServers(allServers);
-  if (Object.keys(translatedMcp).length === 0) return null;
-
   const allowed = new Set(allowedServerNames ?? []);
-  const tools = {};
-  for (const name of Object.keys(translatedMcp)) {
-    tools[`${name}*`] = allowed.has(name);
+  const permittedServers = {};
+  for (const [name, def] of Object.entries(allServers)) {
+    if (allowed.has(name)) permittedServers[name] = def;
   }
 
+  const translatedMcp = translateMcpServers(permittedServers);
+
   const tmpConfigPath = join(tmpDir, `tmp-opencode-mcp-${cycleId}.json`);
-  writeFileSync(tmpConfigPath, JSON.stringify({ mcp: translatedMcp, tools }, null, 2), "utf8");
+  writeFileSync(tmpConfigPath, JSON.stringify({ mcp: translatedMcp }, null, 2), "utf8");
   return tmpConfigPath;
 }
