@@ -1,4 +1,4 @@
-# Cortex — Autonomous Nx Agent Harness
+# Cortex — Autonomous Agent Harness
 
 [![npm version](https://img.shields.io/npm/v/cortex-harness?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/cortex-harness)
 [![npm downloads](https://img.shields.io/npm/dm/cortex-harness?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/cortex-harness)
@@ -6,7 +6,7 @@
 [![Node >=20](https://img.shields.io/node/v/cortex-harness?color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-> Cortex turns a Claude Code session into a supervised engineering team. You give it a task; it writes a typed cycle queue, dispatches git-scoped sub-agents in parallel, Zod-validates every output, auto-reverts scope violations using a non-destructive snapshot, and injects fix cycles when tests or browser smoke fails — repeating until the workspace is clean or chaining into the next run from residual risks.
+> Cortex turns any supported agent CLI into a supervised engineering team. You give it a task; it writes a typed cycle queue, dispatches git-scoped sub-agents in parallel, Zod-validates every output, auto-reverts scope violations using a non-destructive snapshot, and injects fix cycles when tests or browser smoke fails — repeating until the workspace is clean or chaining into the next run from residual risks. Works with Claude Code and OpenCode today; the CLI adapter interface is open for others.
 
 ![Cortex runtime architecture](./cortex-harness-runtime.svg)
 
@@ -25,8 +25,8 @@ Most agent harnesses give you a single orchestrator loop with no structure betwe
 | Dynamic queue extension       | ✓ reconcile-cross-group injects missing cycle groups at runtime | ✗ static plan only      |
 | Fix injection on test failure | ✓ dynamic cycle injection, configurable `MAX_RETRIES`           | ✗ manual retry          |
 | Rate-limit recovery           | ✓ writes partial state, `resume` re-enters at last cycle        | ✗ start over            |
-| Nx-aware verification         | ✓ `nx affected` — only reruns stale projects                    | ✗ full rebuild          |
-| Config-driven agents          | ✓ drop `harness.config.json` into any Nx workspace              | ✗ code changes needed   |
+| Smart verification            | ✓ `nx affected` for Nx projects; standard build/test otherwise  | ✗ full rebuild          |
+| Config-driven agents          | ✓ drop `harness.config.json` into any project                   | ✗ code changes needed   |
 | Surface auto-detection        | ✓ scans project tree on `init`, no manual path entry            | ✗ hardcoded config      |
 | Auto-scope update             | ✓ locks in new paths after unconstrained agent runs             | ✗ manual config update  |
 
@@ -45,7 +45,7 @@ Start run
        ├─ Backend
        └─ Frontend / Worker      ← git scope revert on exit
   └─ Reconcile             (contract check, gap table, re-delegate)
-  └─ Test                  (nx affected build / test / lint, 25-turn slices)
+  └─ Test                  (build / test / lint, 25-turn slices — nx affected on Nx projects)
        └─ [on fail] Fix ×MAX_RETRIES  (re-delegate to owning agent)
             └─ [exhausted] Recovery cycle
   └─ Smoke                 (per-URL browser pass via Playwright MCP; auto-starts dev server)
@@ -121,7 +121,7 @@ During init, Cortex walks your project tree, classifies directories by name patt
   Surface configuration
 ────────────────────────────────────────────────────────────────────────
 
-  Nx workspace detected. Confirm surface paths — press Enter to accept.
+  Project surfaces detected. Confirm paths — press Enter to accept.
 
   Backend / serverless paths  [apps/api/]:
   Frontend paths              [apps/web/]:
@@ -137,6 +137,8 @@ During init, Cortex walks your project tree, classifies directories by name patt
   ✓ Harness initialized successfully
 ────────────────────────────────────────────────────────────────────────
 ```
+
+On Nx workspaces, Cortex detects surfaces automatically from your project graph. On non-Nx projects, it walks the directory tree and asks you to confirm the same surface paths.
 
 Agent `.agent.md` files use `<!-- cortex:surface -->` sentinels — their scope sections are automatically patched to match your confirmed paths.
 
@@ -374,7 +376,7 @@ Each agent is bound to its declared scope paths. After every cycle, Cortex compa
 
 Reverts are non-destructive: a pre-run snapshot captures uncommitted work before the run starts and is refreshed with each cycle's valid in-scope edits, so a revert restores the latest known-good content for a file rather than wiping it back to bare `HEAD`. See [ARCHITECTURE.md → Pre-Run Snapshot & Recovery](./ARCHITECTURE.md#pre-run-snapshot--recovery) for details.
 
-**New project with no scopes configured?** Set all agent scopes to `[]` and run. Cortex detects the paths your agents create, locks them into `harness.config.json`, and enforces them from the next cycle onward — shared libs (`libs/shared/`) are automatically distributed to all relevant agents.
+**New project with no scopes configured?** Set all agent scopes to `[]` and run. Cortex detects the paths your agents create, locks them into `harness.config.json`, and enforces them from the next cycle onward — shared lib paths (e.g. `libs/shared/` in Nx workspaces) are automatically distributed to all relevant agents.
 
 ---
 
@@ -412,7 +414,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
 | `implement-*`           | execution    | Writes source files within declared scope; reverts violations                                | `implement-<surface>.json`   |
 | `reconcile`             | verification | Cross-surface contract check, fills gap table, re-delegates gaps                             | `reconcile[-<group>].json`   |
 | `reconcile-cross-group` | verification | Multi-intent only — verifies shared contracts across all groups; may inject new cycle groups | `reconcile-cross-group.json` |
-| `test`                  | verification | Runs `nx affected --target=build,test,lint`; 25 turns/slice, up to 10 retries                | `test[-<group>].json`        |
+| `test`                  | verification | Runs build/test/lint (nx affected on Nx projects); 25 turns/slice, up to 10 retries         | `test[-<group>].json`        |
 | `fix-*`                 | recovery     | Re-delegates broken surface to owning agent with exact error                                 | injected dynamically         |
 | `recovery`              | recovery     | Reads prompt-orchestration.md after MAX_RETRIES exhausted; applies chaining                  | injected dynamically         |
 | `smoke`                 | verification | Per-URL browser pass via Playwright MCP; on failure injects `fix-*` + smoke-retry up to MAX_RETRIES; exhausted failures → residual risks | `smoke[-<group>].json` |
@@ -432,7 +434,7 @@ Out-of-scope file writes are automatically reverted by git after each implement 
     create-app.md
     reconcile.md
     prompt-orchestration.md
-    url-detector.md             ← pre-smoke URL extraction (mini-Claude session, print-only/no Write; falls back to route-scanner)
+    url-detector.md             ← pre-smoke URL extraction (mini agent session, print-only/no Write; falls back to route-scanner)
   prompts-opencode/             ← OpenCode-flavored prompt variants, scaffolded alongside prompts/ — selected when cliProvider is "opencode"
   agents/
     backend-subagent.agent.md   ← scope sections auto-patched by cortex-harness config

@@ -1,7 +1,7 @@
 {
   "name": "cortex-harness",
   "version": "1.14.0",
-  "description": "Config-driven autonomous Nx agent harness — multi-cycle state machine with Zod validation, git scope enforcement, and self-healing fix injection.",
+  "description": "CLI-agnostic autonomous agent harness — multi-cycle state machine with Zod validation, git scope enforcement, parallel sub-agents, and self-healing fix injection.",
   "type": "module",
   "license": "MIT",
   "author": "arnav003",
@@ -17,12 +17,14 @@
     "ai",
     "agent",
     "autonomous",
-    "nx",
-    "monorepo",
     "claude",
+    "opencode",
+    "cli-agnostic",
     "harness",
     "orchestrator",
-    "codegen"
+    "codegen",
+    "developer-tools",
+    "git-scope"
   ],
   "files": [
     "bin/",
