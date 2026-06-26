@@ -1,0 +1,8 @@
+{
+  "name": "cortex-harness",
+  "description": "Monitoring layer for the cortex-harness autonomous agent engine — surface cycle signals, classify stops, and guide recovery without leaving your Claude Code session.",
+  "author": {
+    "name": "arnavranjan005",
+    "url": "https://github.com/arnavranjan005/cortex-harness"
+  }
+}

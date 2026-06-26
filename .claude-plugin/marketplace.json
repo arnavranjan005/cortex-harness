@@ -1,0 +1,34 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cortex-harness",
+  "description": "Monitoring layer for the cortex-harness autonomous agent engine — 11 skills covering run/chain/resume/status/logs and full config management.",
+  "owner": {
+    "name": "arnavranjan005",
+    "url": "https://github.com/arnavranjan005/cortex-harness"
+  },
+  "plugins": [
+    {
+      "name": "cortex-harness",
+      "description": "CLI-agnostic autonomous agent harness — typed cycle state machine with git-enforced write scopes, parallel sub-agents, and self-healing fix injection.",
+      "author": {
+        "name": "arnavranjan005"
+      },
+      "category": "development",
+      "source": ".",
+      "homepage": "https://github.com/arnavranjan005/cortex-harness",
+      "skills": [
+        "./skills/cortex-chain",
+        "./skills/cortex-run",
+        "./skills/cortex-resume",
+        "./skills/cortex-continue",
+        "./skills/cortex-status",
+        "./skills/cortex-logs",
+        "./skills/cortex-init",
+        "./skills/cortex-config",
+        "./skills/cortex-mcp",
+        "./skills/cortex-auth",
+        "./skills/cortex-notify"
+      ]
+    }
+  ]
+}
