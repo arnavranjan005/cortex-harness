@@ -2,44 +2,43 @@
 name: cortex-logs
 description: Show run logs in a readable format — cycle starts/ends, tool calls, costs, errors.
 argument-hint: Optional run timestamp to view a specific run (e.g. "2026-06-26T02-14-33")
-allowed-tools: Bash
+allowed-tools: Bash, AskUserQuestion
 ---
 
 ## Step 1 — Show logs
 
-If `$ARGUMENTS` is empty, show the most recent run:
+If $ARGUMENTS is empty, show most recent run:
 ```bash
 cortex-harness logs
 ```
 
-If `$ARGUMENTS` contains a timestamp, show that specific run:
+If $ARGUMENTS contains a timestamp:
 ```bash
 cortex-harness logs --run "$ARGUMENTS"
 ```
 
 ## Step 2 — Interpret key events
 
-After showing the raw log output, highlight:
+**Cost summary:** Find `RUN END` events — report total spend.
 
-**Cost summary:** Find `RUN END` events — report total spend for this run.
-
-**Cycles that ran:** List each `CYCLE START` / `CYCLE END` pair with the cycle ID and outcome (✓ done, ⊘ blocked, ~ partial).
+**Cycles that ran:** List each `CYCLE START` / `CYCLE END` pair with cycle ID and outcome (✓ done, ⊘ blocked, ~ partial).
 
 **Errors or failures:** Surface any `FATAL`, `ERROR`, or rate-limit events.
 
-**Hung cycles:** If any cycle started but has no matching `CYCLE END`, flag it as potentially hung.
+**Hung cycles:** Flag any cycle with a `CYCLE START` but no matching `CYCLE END`.
 
-## Step 3 — Suggest action if errors found
+## Step 3 — Chain based on what's found
 
-If the log shows failures or errors, suggest:
-- `cortex-harness status` — see current queue state
-- `cortex-harness resume` — re-enter if cycles are blocked/partial
-- `/cortex-chain "task"` — start fresh if the run is unrecoverable
+**If errors, failures, or hung cycles found:**
+Use AskUserQuestion:
+- "Errors found in the logs. What would you like to do?"
+  - "Check current status" → Read `$CLAUDE_SKILL_DIR/../cortex-status/SKILL.md` and follow those instructions inline now (skill chain)
+  - "Start a fresh chain task" → Read `$CLAUDE_SKILL_DIR/../cortex-chain/SKILL.md` and follow those instructions inline now (skill chain)
+  - "Just reviewing — nothing for now"
 
-## Listing available runs
-
-If the user wants to see all available runs (to pick a specific one), run:
-```bash
-cortex-harness logs
-```
-The command lists available run timestamps when no matching run is found. You can also list `.harness/runs/*.jsonl` directly.
+**If logs look clean (no errors):**
+Use AskUserQuestion:
+- "Logs look clean. What next?"
+  - "Continue chaining" → Read `$CLAUDE_SKILL_DIR/../cortex-continue/SKILL.md` and follow those instructions inline now (skill chain)
+  - "Start a new task" → Read `$CLAUDE_SKILL_DIR/../cortex-chain/SKILL.md` and follow those instructions inline now (skill chain)
+  - "Done for now"

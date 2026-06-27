@@ -1,52 +1,49 @@
 ---
 name: cortex-notify
-description: Configure or test cortex-harness notifications — Discord webhooks, Windows toast alerts, or other notification channels.
-argument-hint: Action (e.g. "show config" or "test discord" or "set webhook URL")
-allowed-tools: Bash, Read, Edit
+description: Configure or test cortex-harness notifications — Discord webhooks, Windows toast — with interactive prompts. Webhook URLs are never shown.
+argument-hint: Action (e.g. "show config", "add discord", "test", "disable windows")
+allowed-tools: AskUserQuestion, mcp__cortex-harness__cortex_notify_list, mcp__cortex-harness__cortex_notify_discord_add, mcp__cortex-harness__cortex_notify_discord_remove, mcp__cortex-harness__cortex_notify_windows_toggle, mcp__cortex-harness__cortex_notify_test
 ---
 
-## Step 1 — Read current notification config
+## Step 1 — Read current config
 
-Run:
-```bash
-cortex-harness notify --help
-```
+Call `cortex_notify_list`. Show the user current channel status.
 
-Also read `harness.config.json` for any notification-related fields.
+## Step 2 — Ask what to do
 
-## Step 2 — Handle the request
+If $ARGUMENTS is empty, use AskUserQuestion:
+- "What would you like to do with notifications?"
+  - "Add Discord webhook"
+  - "Enable Windows toast"
+  - "Disable Windows toast"
+  - "Test all channels"
 
-**Show current config:**
-Display what notification channels are configured and whether they're active.
+If $ARGUMENTS already specifies an action, skip this and go directly to that action below.
 
-**Configure Discord webhook:**
-The engine sends Discord notifications on run-end events. To configure:
-```bash
-cortex-harness notify
-```
-This is an interactive CLI for setting up the webhook URL.
+## Step 3 — Handle the action
 
-Or the user can set the environment variable `CORTEX_DISCORD_WEBHOOK` directly.
+**Add Discord webhook:**
+Use AskUserQuestion to ask:
+- "What display name for this Discord channel?" (options: "ops", "alerts", "dev", "Other")
 
-**Test notifications:**
-```bash
-cortex-harness notify --test
-```
+Then ask the user to paste their webhook URL in the next message (plain text reply — not AskUserQuestion, since URLs are free-form and secret).
 
-**Windows toast notifications:**
-These are automatic on Windows when a run ends — no configuration needed. They use the Windows notification system natively.
+Call `cortex_notify_discord_add` with the URL and label. Confirm with the redacted form only — never echo the URL.
 
-## When notifications fire
+After adding, use AskUserQuestion:
+- "Send a test message to verify the webhook works?"
+  - "Yes, test it now" → call `cortex_notify_test`
+  - "No, skip test"
 
-The engine sends notifications on:
-- Run end (success) — with cost summary and cycle count
-- Run end (blocked) — with block reason
-- Rate limit hit — with reset time
+**Enable/disable Windows toast:**
+Call `cortex_notify_windows_toggle` with `enabled: true` or `false`.
 
-Notifications do not fire on individual cycle completions — only on full run end.
+**Test all channels:**
+Call `cortex_notify_test`. Report results.
 
-## Security note
+**Remove Discord channel:**
+Call `cortex_notify_list` to show channels. Ask user which label to remove. Call `cortex_notify_discord_remove`.
 
-Discord webhook URLs are secrets — they allow anyone to post to your channel. If you configure one:
-- Store it as an environment variable (`CORTEX_DISCORD_WEBHOOK`), not in `harness.config.json`
-- Never show or log the webhook URL in this session
+## Security rule
+
+Never display, echo, log, or repeat a webhook URL — not even to confirm it was saved. Use only the redacted form returned by the tool.

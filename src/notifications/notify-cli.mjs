@@ -9,7 +9,7 @@ import {
 } from '../notification-config.mjs';
 import { sendDiscordNotification } from './notify-discord.mjs';
 import { sendWindowsNotification } from './notification-windows.mjs';
-import { confirm as uiConfirm, text as uiText } from '../cli/helpers/ui.mjs';
+import { createInterface } from 'readline';
 
 function printHelp() {
   logger.info('Harness notification channels');
@@ -70,13 +70,19 @@ function setDiscordRegistrations(config, registrations) {
   config.channels.discord = registrations;
 }
 
-async function confirm(question) {
-  return uiConfirm({ message: question, initialValue: false });
+async function prompt(question) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    rl.question(question, answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
 }
 
-async function prompt(question) {
-  const answer = await uiText({ message: question.replace(/:\s*$/, "") });
-  return (answer ?? "").trim();
+async function confirm(question) {
+  const answer = await prompt(`${question} (y/n): `);
+  return answer.toLowerCase().startsWith('y');
 }
 
 async function registerWindows() {
@@ -298,6 +304,41 @@ async function unregisterChannel(channel) {
   logger.info(`Discord registration removed: ${target.label ?? target.id}.`);
 }
 
+async function testAll() {
+  const state = readNotificationConfig();
+  const config = state.exists && state.valid ? state.config : null;
+
+  let tested = false;
+
+  const discordRegs = config ? getDiscordRegistrations(config) : [];
+  const enabledDiscord = discordRegs.filter(r => r.enabled && r.webhookUrl);
+  if (enabledDiscord.length) {
+    logger.info(`Testing ${enabledDiscord.length} Discord channel(s)...`);
+    const settled = await Promise.allSettled(
+      enabledDiscord.map(r =>
+        testDiscordWithWebhook(r.webhookUrl).then(() => ({ label: r.label ?? r.id, ok: true }))
+      )
+    );
+    settled.forEach((res, i) => {
+      const label = enabledDiscord[i].label ?? enabledDiscord[i].id;
+      if (res.status === 'fulfilled') logger.info(`  OK: ${label}`);
+      else logger.info(`  FAIL: ${label} — ${res.reason?.message ?? String(res.reason)}`);
+    });
+    tested = true;
+  }
+
+  if (config?.channels?.windows?.enabled && process.platform === 'win32') {
+    logger.info('Testing Windows toast...');
+    const result = await sendWindowsNotification({ title: 'Claude Harness', message: 'Notification test' });
+    logger.info(result.ok ? '  OK: Windows toast' : `  FAIL: Windows toast — ${result.error}`);
+    tested = true;
+  }
+
+  if (!tested) {
+    logger.info('No enabled channels configured to test.');
+  }
+}
+
 async function main() {
   const [command = 'help', channel] = process.argv.slice(2);
 
@@ -328,6 +369,11 @@ async function main() {
 
   if (command === 'test' && channel === 'discord') {
     await testDiscord();
+    return;
+  }
+
+  if (command === 'test' && !channel) {
+    await testAll();
     return;
   }
 

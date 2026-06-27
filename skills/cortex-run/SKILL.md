@@ -2,23 +2,24 @@
 name: cortex-run
 description: Fire a single cortex-harness run for a task, monitor on stop, classify the outcome, and surface what completed with recovery guidance.
 argument-hint: Task description (e.g. "fix the broken invoice total calculation")
-allowed-tools: Bash, Read, Glob
+allowed-tools: Bash, Read, Glob, AskUserQuestion
 ---
 
-You are the cortex-harness monitoring layer for a single run. Your job is to fire the engine, watch what happens on stop, and surface the right information — not to orchestrate the work yourself.
+You are the cortex-harness monitoring layer for a single run. Fire the engine, watch what happens on stop, surface the right information — do not orchestrate the work yourself.
 
-Read `$CLAUDE_SKILL_DIR/references/output-signals.md` and `$CLAUDE_SKILL_DIR/references/error-recovery.md` now.
+Read `$CLAUDE_SKILL_DIR/references/output-signals.md` now.
 
 ## Step 1 — Validate setup
 
-Check that `harness.config.json` exists in the current directory.
+Check that `harness.config.json` exists:
+```bash
+test -f harness.config.json && echo "EXISTS" || echo "MISSING"
+```
 
-If it does not exist, stop and tell the user:
-> cortex-harness is not initialised in this project. Run `/cortex-init` first.
+**If MISSING** → Read `$CLAUDE_SKILL_DIR/../cortex-init/SKILL.md` and follow those instructions inline now (skill chain — must initialise first)
 
 ## Step 2 — Fire the run
 
-Run:
 ```bash
 cortex-harness run "$ARGUMENTS"
 ```
@@ -27,43 +28,36 @@ Let it run to completion. Do not interrupt.
 
 ## Step 3 — Investigate on stop
 
-When the run exits (any reason), investigate immediately.
-
-Read:
-1. `.harness/task-queue.json` — queue state
-2. `.harness/cycle-state/*.json` — each cycle's output
-3. `.harness/output/delivery-*.md` — latest delivery if it exists
+Read in order:
+1. `.harness/task-queue.json`
+2. `.harness/cycle-state/*.json`
+3. `.harness/output/delivery-*.md` (latest)
 
 ## Step 4 — Classify the stop
 
-Use `output-signals.md` to classify the signal from the run's stdout and the files you read.
-
-Determine:
-- Which cycles completed (status: "done")
-- Which are blocked, partial, or pending
-- What the stop signal is
+Use `output-signals.md` to classify the stop signal.
 
 ## Step 5 — Surface the result
 
-**What completed:**
-- List each done cycle, one line each, what it accomplished
-
+**What completed:** list each done cycle, one line, what it accomplished.
 **Stop signal:** [classified signal]
+**What's next:** recovery guidance for this signal.
 
-**What's next:**
-- Recovery guidance from `error-recovery.md` for this signal
-- Exact command to run next
+## Step 6 — Chain based on stop reason
 
-If clean completion with delivery: confirm what was delivered and that all cycles are done.
+**If stop = needs-human:**
+→ Read `$CLAUDE_SKILL_DIR/../cortex-resume/SKILL.md` and follow those instructions inline now (skill chain)
 
-If `needs-human`: run `cortex-harness status`, surface the blocked question, tell the user to answer it and run `cortex-harness resume`.
+**If stop = partial/budget-exhausted AND residual risks exist:**
+Use AskUserQuestion:
+- "There are residual risks. Continue with cortex-chain?"
+  - "Yes — continue the chain" → Read `$CLAUDE_SKILL_DIR/../cortex-chain/SKILL.md` and follow those instructions inline now (skill chain)
+  - "No — I'll review and decide later"
+
+**If stop = complete, no residual risks:** confirm clean delivery. Done.
 
 ## Rules
 
-- Never re-fire the engine automatically after a block.
-- Never answer NEEDS_HUMAN_INPUT questions yourself.
-- Never modify `.harness/` files directly.
-
-## When to use cortex-chain instead
-
-If the task is large or likely to produce residual risks that need chaining into a follow-up run, suggest `/cortex-chain` instead. `cortex-run` runs once and stops; `cortex-chain` automatically chains runs until clean or budget hits.
+- Never re-fire the engine automatically after a block
+- Never answer NEEDS_HUMAN_INPUT questions yourself
+- Never modify `.harness/` files directly

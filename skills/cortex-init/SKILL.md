@@ -1,62 +1,61 @@
 ---
 name: cortex-init
-description: Guided setup walkthrough for cortex-harness — checks prerequisites and scaffolds .harness/ prompt templates, agent files, and harness.config.json.
+description: Guided setup wizard for cortex-harness — checks prerequisites, scaffolds .harness/ files, then walks the user through confirming surface paths and dev server config with interactive prompts.
 argument-hint: (no arguments needed)
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, AskUserQuestion, mcp__cortex-harness__cortex_init_run, mcp__cortex-harness__cortex_init_set_scope, mcp__cortex-harness__cortex_config_get
 ---
 
 Read `$CLAUDE_SKILL_DIR/references/scaffold-checklist.md` now.
 
-## Step 1 — Check if CLI is installed
+## Step 1 — Check prerequisites
 
 ```bash
 cortex-harness --version
 ```
 
-If this fails with "command not found", tell the user to install it:
-```
-npm install -g cortex-harness
-```
-Then re-run this skill.
+If this fails: tell the user to run `npm install -g cortex-harness` then re-run this skill.
 
-## Step 2 — Check if already initialised
-
-Check whether `harness.config.json` exists in the current directory.
-
-If it exists, tell the user:
-> cortex-harness is already initialised here. Run `/cortex-config` to review or update configuration.
-
-## Step 3 — Run init
-
-Tell the user:
-> Running cortex-harness init. It will detect your project structure and ask you to confirm surface paths.
-> Follow the interactive prompts in your terminal.
-
-Then advise them to run in their terminal (Claude cannot drive interactive prompts):
-```
-cortex-harness init
+Check whether `harness.config.json` already exists:
+```bash
+test -f harness.config.json && echo "EXISTS" || echo "FRESH"
 ```
 
-Explain what it will ask:
-- Confirm detected surface paths (backend, frontend, shared libs, workers)
-- These become the write-scope declarations for each sub-agent
+**If EXISTS** → use AskUserQuestion:
+- "cortex-harness is already initialised here. What would you like to do?"
+  - "Review or update config" → Read `$CLAUDE_SKILL_DIR/../cortex-config/SKILL.md` and follow those instructions inline now (skill chain)
+  - "Re-run init to update scaffolded files" → continue to Step 2
 
-## Step 4 — Post-init verification
+## Step 2 — Scaffold all files
 
-After the user says init is done, verify using the checklist from `scaffold-checklist.md`:
+Call `cortex_init_run`. This runs `cortex-harness init --yes` — copies prompt templates, agent files, harness.config.json, wires Claude hooks, patches .gitignore.
 
-Read:
-- `harness.config.json` — confirm it exists and agents have scope paths
-- `.harness/prompts/` — confirm prompt templates exist
-- `.harness/agents/` — confirm agent role files exist
-- `CLAUDE.md` — confirm routing instructions exist
+## Step 3 — Confirm detected surfaces
 
-If anything is missing, tell the user what to fix and how.
+Call `cortex_config_get` with `field: "agents"`. Use AskUserQuestion:
+- "Do these auto-detected surface paths look right?"
+  - "Yes, looks correct" → skip to Step 4
+  - "No, I need to adjust paths" → ask follow-up in plain text for each agent, then call `cortex_init_set_scope` with corrected map
 
-## Step 5 — Next steps
+## Step 4 — Smoke auth (chains to cortex-auth)
 
-After successful init:
-> Setup complete. Run your first task with:
-> `/cortex-chain "describe your task here"`
->
-> Or a single run with: `/cortex-run "describe your task here"`
+Use AskUserQuestion:
+- "Does your app require login to access pages?"
+  - "Yes — set up auth now" → Read `$CLAUDE_SKILL_DIR/../cortex-auth/SKILL.md` and follow those instructions inline now (skill chain)
+  - "No — pages are public" → skip to Step 5
+
+## Step 5 — Post-init verification
+
+Use checklist from `scaffold-checklist.md`. Verify:
+- `harness.config.json` exists with non-empty agent scopes
+- `.harness/prompts/` exists
+- `.harness/agents/` exists
+- `CLAUDE.md` exists
+
+Report what passed. Flag anything missing.
+
+## Step 6 — Offer first task (chains to cortex-chain)
+
+Use AskUserQuestion:
+- "Setup complete! What would you like to do next?"
+  - "Run my first task now" → Read `$CLAUDE_SKILL_DIR/../cortex-chain/SKILL.md` and follow those instructions inline now (skill chain)
+  - "I'll start a task later"

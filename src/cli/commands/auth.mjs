@@ -53,12 +53,12 @@ export function registerAuthCommand(program) {
       let spawnedProcs = [];
       if (opts.server !== false && config?.devServer) {
         log.step("Starting dev servers…");
-        const result = await startDevServer(config.devServer, { ROOT: process.cwd() });
-        spawnedProcs = result.procs;
-        if (result.procs.length === 0 && !result.browserUrl) {
-          // startDevServer already printed the "not ready" warning — servers may already be up
-          // or timed out. Either way, attempt to open the browser and let Playwright report.
-          log.warn("Dev server did not become ready within the timeout — attempting anyway");
+        try {
+          const result = await startDevServer(config.devServer, { ROOT: process.cwd() });
+          spawnedProcs = result.procs;
+        } catch (err) {
+          process.stderr.write(err.message + "\n");
+          process.exit(1);
         }
       }
 

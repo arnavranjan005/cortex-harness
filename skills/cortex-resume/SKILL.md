@@ -2,7 +2,7 @@
 name: cortex-resume
 description: Surface what a blocked run is waiting on, then guide the user through answering and resuming with cortex-harness resume.
 argument-hint: (no arguments needed)
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, AskUserQuestion
 ---
 
 You are reading the blocked run state and surfacing what the engine is waiting for. You do not answer the question yourself.
@@ -11,51 +11,46 @@ Read `$CLAUDE_SKILL_DIR/references/blocked-states.md` now.
 
 ## Step 1 — Check for a blocked run
 
-Run:
 ```bash
 cortex-harness status
 ```
 
-Read the output carefully.
-
 ## Step 2 — No blocked run
 
-If the status output says "No active run found" or "All cycles complete", tell the user:
-> No blocked run found. Start a new run with `/cortex-run` or `/cortex-chain`.
+If status says "No active run found" or "All cycles complete":
+→ Read `$CLAUDE_SKILL_DIR/../cortex-status/SKILL.md` and follow those instructions inline now (skill chain — show full current state)
 
 ## Step 3 — Session-limit block
 
-If the status output shows a session/weekly limit block:
-
-Tell the user:
-- Claude's usage limit was hit — the run state is preserved
-- The limit typically resets within 24 hours
-- After it resets, resume with: `cortex-harness resume`
+If status shows a session/weekly limit block:
+- Claude's usage limit was hit — run state is preserved
+- Limit typically resets within 24 hours
+- After reset: `cortex-harness resume`
 - No work is lost
 
 ## Step 4 — Human-input block
 
-If the status output shows one or more cycles waiting for human input, surface each one clearly:
+If status shows cycles waiting for human input, surface each one clearly:
 
 ---
 **The engine stopped and needs your decision:**
 
-[Paste the question text from status output here — do not paraphrase it]
+[Paste the exact question text from status output — do not paraphrase]
 
-**Why the engine stopped here:** This is a decision the engine will not make autonomously — it involves [auth/security/schema/ownership — pick the right one based on the question].
+**Why it stopped here:** This involves [auth / security / schema / ownership — pick based on the question] — the engine will not decide this autonomously.
 
 **What to do:**
 1. Decide your answer to the question above
 2. Run in your terminal: `cortex-harness resume`
-3. The engine will walk you through answering interactively, then re-enter the run
+3. The engine walks you through answering interactively, then re-enters the run
 
 ---
 
-If there are multiple blocked cycles, surface each question separately.
+If multiple blocked cycles, surface each question separately.
 
 ## Rules
 
-- Do NOT answer the blocked question yourself, even if it seems obvious.
-- Do NOT run `cortex-harness resume` yourself — that command collects answers interactively and cannot be driven by Claude.
-- Do NOT modify any `.harness/` files.
-- If the question is about auth, JWT, CORS, CSRF, schema changes, or permissions — these are security gates by design. Tell the user that explicitly.
+- Do NOT answer the blocked question yourself, even if it seems obvious
+- Do NOT run `cortex-harness resume` yourself — it is interactive
+- Do NOT modify any `.harness/` files
+- If the question is about auth, JWT, CORS, CSRF, schema changes, or permissions — tell the user explicitly these are security gates by design

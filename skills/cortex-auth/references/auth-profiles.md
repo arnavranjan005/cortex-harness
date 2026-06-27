@@ -1,47 +1,39 @@
-# Auth Profiles Reference
+# Auth Profiles — Quick Reference
 
-How `authProfiles` in `harness.config.json` works for authenticated smoke sessions.
+## What is stored
 
-## What auth profiles are for
-
-Smoke cycles use Playwright to browser-test URLs after tests pass. For URLs behind login, the smoke agent needs to authenticate first. Auth profiles let you name a set of credentials so the smoke cycle can log in automatically.
-
-## Auth profile structure
-
+harness.config.json `authProfiles` array — each entry:
 ```json
-{
-  "authProfiles": [
-    {
-      "name": "admin",
-      "loginUrl": "http://localhost:3000/login",
-      "credentials": {
-        "email": "admin@example.com",
-        "password": "test-password"
-      }
-    },
-    {
-      "name": "viewer",
-      "loginUrl": "http://localhost:3000/login",
-      "credentials": {
-        "email": "viewer@example.com",
-        "password": "test-password"
-      }
-    }
-  ]
-}
+{ "name": "default", "storageFile": ".harness/smoke-auth-default.json" }
 ```
 
-## Using auth profiles in smoke URLs
+No credentials, no login URL, no passwords are ever stored.
 
-Reference a profile by name in the `smokeUrls` config or in the smoke prompt. The smoke orchestrator reads the profile, navigates to `loginUrl`, fills the credentials, and stores the session cookie for the test URLs.
+## What is NOT stored
 
-## Security notes
+- Passwords, tokens, or API keys
+- Login URLs (come from devServer config, not authProfiles)
+- Session data itself (stored in the storageFile, never in harness.config.json)
 
-- Auth profiles are in `harness.config.json` — do NOT commit real credentials there
-- Use test/staging credentials only
-- The `.gitignore` patched by `cortex-harness init` does not exclude `harness.config.json` by default — if you add real credentials, add it to `.gitignore` manually
-- Prefer environment variable references where possible (the engine does not currently interpolate env vars in auth profiles — store only test credentials)
+## Session capture flow (in-chat — automatic)
 
-## Managing profiles with cortex-harness auth
+1. `cortex_auth_start` — spawns `cortex-harness auth --profile <name>`, waits for browser to open
+2. User logs in via the open browser window
+3. User clicks "Yes, I'm fully logged in" in chat
+4. `cortex_auth_finish` — sends Enter to the auth process → session saved to storageFile
 
-`cortex-harness auth` provides an interactive CLI for adding, listing, and removing auth profiles without manually editing the JSON.
+## Session capture flow (terminal fallback)
+
+```
+cortex-harness auth --profile default
+```
+Browser opens → log in → press Enter → `.harness/smoke-auth-default.json` created.
+
+## Profile names
+
+- `"default"` — used when `--profile` is omitted
+- Any alphanumeric name: `"admin"`, `"viewer"`, `"staging"`
+
+## Smoke cycle behavior
+
+Smoke cycles load each profile's storageFile and run browser checks as that authenticated user.

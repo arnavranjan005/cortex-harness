@@ -391,9 +391,21 @@ export function pollReadiness(url, timeoutMs) {
     const mod = url.startsWith("https") ? https : http;
     function attempt() {
       if (Date.now() >= deadline) { resolve(false); return; }
-      const req = mod.get(url, (res) => { res.resume(); resolve(res.statusCode < 500); });
-      req.setTimeout(2000, () => { req.destroy(); setTimeout(attempt, 2000); });
-      req.on("error", () => setTimeout(attempt, 2000));
+      let settled = false;
+      const req = mod.get(url, (res) => {
+        res.resume();
+        settled = true;
+        resolve(res.statusCode < 500);
+      });
+      req.setTimeout(2000, () => {
+        req.destroy();
+        // destroy() triggers the error event — use settled flag to schedule retry only once
+      });
+      req.on("error", () => {
+        if (settled) return;
+        settled = true;
+        setTimeout(attempt, 2000);
+      });
     }
     attempt();
   });
@@ -444,11 +456,11 @@ function spawnService(svc, ROOT) {
     proc = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", svc.command],
-      { cwd: spawnCwd, stdio: "ignore" },
+      { cwd: spawnCwd, stdio: ["ignore", "pipe", "pipe"] },
     );
   } else {
     const parts = svc.command.split(/\s+/);
-    proc = spawn(parts[0], parts.slice(1), { cwd: spawnCwd, stdio: "ignore" });
+    proc = spawn(parts[0], parts.slice(1), { cwd: spawnCwd, stdio: ["ignore", "pipe", "pipe"] });
   }
   proc.on("error", () => {});
   return proc;
@@ -472,8 +484,26 @@ export async function startDevServer(dsConfig, { ROOT }) {
       }
       logger.info(`  ${chalk.dim("[DEV SERVER]")} Starting: ${svc.command}`);
       const proc = spawnService(svc, ROOT);
-      const ready = await pollReadiness(svc.readinessUrl, timeoutMs);
-      return { proc, ready };
+
+      // Rejects immediately if the process exits with a non-zero code — stops pollReadiness
+      // from hanging for the full timeout when the start command itself is broken.
+      let outputBuf = "";
+      proc.stdout?.on("data", chunk => { outputBuf = (outputBuf + chunk.toString()).slice(-4000); });
+      proc.stderr?.on("data", chunk => { outputBuf = (outputBuf + chunk.toString()).slice(-4000); });
+      const procFailed = new Promise((_, reject) => {
+        proc.on("exit", (code) => {
+          if (code !== 0 && code !== null) {
+            const detail = outputBuf.trim() ? `\n${outputBuf.trim()}` : "";
+            reject(new Error(`Dev server command failed (exit ${code}): ${svc.command}${detail}`));
+          }
+        });
+      });
+
+      const ready = await Promise.race([
+        pollReadiness(svc.readinessUrl, timeoutMs),
+        procFailed,
+      ]);
+      return { proc, ready, outputBuf };
     }),
   );
 
@@ -481,10 +511,15 @@ export async function startDevServer(dsConfig, { ROOT }) {
   const allReady = results.every((r) => r.ready);
 
   if (!allReady) {
-    const failed = cfg.services.filter((_, i) => !results[i].ready).map((s) => s.readinessUrl);
-    logger.info(`  ${chalk.yellow("[DEV SERVER]")} Not ready within ${timeoutMs / 1000}s: ${failed.join(", ")} — smoke will skip`);
     spawnedProcs.forEach((p) => killProc(p));
-    return { procs: [], browserUrl: "" };
+    const lines = cfg.services
+      .map((svc, i) => {
+        if (results[i].ready) return null;
+        const raw = results[i].outputBuf?.trim();
+        return `${svc.command} did not become ready at ${svc.readinessUrl} within ${timeoutMs / 1000}s${raw ? `\n${raw}` : ""}`;
+      })
+      .filter(Boolean);
+    throw new Error(lines.join("\n\n"));
   }
 
   logger.info(`  ${chalk.dim("[DEV SERVER]")} All services ready — browser: ${cfg.browserUrl}`);
